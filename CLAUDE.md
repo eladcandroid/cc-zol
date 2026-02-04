@@ -1,0 +1,171 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+cc-zol is a CLI that lets anyone use Claude Code with any OpenAI-compatible API. It features:
+- **Email verification** for user authentication
+- **Local proxy** that translates Anthropic API → OpenAI format
+- **Remote auth server** for centralized user management
+- **Optional Telegram bot** for remote task control
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         USER'S MACHINE                          │
+│                                                                 │
+│  cc-zol CLI                                                     │
+│      │                                                          │
+│      ├─► Login ──────────────────────► Auth Server (remote)     │
+│      │         POST /auth/send-code     │                       │
+│      │         POST /auth/verify        ▼                       │
+│      │                              MongoDB                     │
+│      │                                                          │
+│      └─► Start local proxy                                      │
+│              │                                                  │
+│              ▼                                                  │
+│      ┌─────────────────┐                                        │
+│      │  Local Proxy    │  ← server.py                           │
+│      │  (localhost)    │                                        │
+│      └────────┬────────┘                                        │
+│               │                                                 │
+│               ▼                                                 │
+│      Claude Code CLI                                            │
+│      (ANTHROPIC_BASE_URL=localhost)                             │
+│               │                                                 │
+└───────────────┼─────────────────────────────────────────────────┘
+                │
+                ▼ (OpenAI format)
+        Provider API (e.g., NVIDIA NIM)
+```
+
+## Commands
+
+### Run cc-zol (Main CLI)
+```bash
+cc-zol              # Login if needed, then start Claude
+cc-zol login        # Force re-login with new email
+cc-zol logout       # Clear saved credentials
+cc-zol model        # Change the model
+cc-zol status       # Show current user and server status
+cc-zol stop         # Stop the background server
+```
+
+### Run Auth Server (for hosting)
+```bash
+# With PM2 (recommended)
+pm2 start ecosystem.config.cjs
+
+# Or directly
+uv run uvicorn auth_server:app --host 0.0.0.0 --port 8083
+```
+
+### Run Local Proxy Manually
+```bash
+uv run uvicorn server:app --host 0.0.0.0 --port 8082
+```
+
+### Run Tests
+```bash
+uv run pytest                        # Run all tests
+uv run pytest tests/test_api.py      # Run single test file
+uv run pytest -k "test_name"         # Run tests matching pattern
+uv run pytest -x                     # Stop on first failure
+```
+
+## Core Packages
+
+### zol/ - CLI Module
+- `main.py` - Click CLI entry point (cc-zol commands)
+- `config.py` - Local config (~/.cc-zol/), AUTH_SERVER_URL
+- `server_manager.py` - Background uvicorn process management
+- `tui.py` - Interactive prompts, model selection
+
+### auth/ - Authentication Module (used by auth server)
+- `models.py` - User Pydantic model
+- `database.py` - MongoDB operations (motor)
+- `email_service.py` - SMTP email + console fallback
+- `middleware.py` - FastAPI auth middleware
+
+### api/ - Local Proxy Server
+- `app.py` - FastAPI app (local proxy, no auth)
+- `routes.py` - `/v1/messages` endpoint (proxies to provider)
+- `auth_routes.py` - `/auth/*` endpoints (used by auth server)
+- `request_utils.py` - Optimizations (quota mocking, title skip)
+
+### providers/ - API Provider
+- `base.py` - Abstract `BaseProvider` class
+- `openai_provider.py` - OpenAI-compatible provider
+- `openai_mixins.py` - Request/response conversion
+- `utils/` - SSE builder, thinking parser, tool extraction
+
+### messaging/ - Telegram Bot (optional)
+- `telegram.py` - Telegram bot adapter
+- `handler.py` - Message handler
+- `tree_*.py` - Conversation threading
+
+### cli/ - Claude Code Subprocess (for Telegram)
+- `manager.py` - Session pooling
+- `session.py` - CLI session wrapper
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `server.py` | Local proxy entry point |
+| `auth_server.py` | Remote auth server entry point |
+| `ecosystem.config.cjs` | PM2 config for auth server (gitignored) |
+| `.env` | Local secrets (gitignored) |
+| `.env.example` | Template for .env |
+
+## Configuration
+
+### Auth Server URL
+Set in `zol/config.py`:
+```python
+AUTH_SERVER_URL = "http://localhost:8083"  # Or your hosted URL
+```
+
+### Environment Variables (.env)
+
+**For Auth Server:**
+```
+MONGODB_URI=mongodb://localhost:27017
+ADMIN_PASSWORD=your-admin-password
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your@gmail.com
+SMTP_PASSWORD=app-password
+SMTP_FROM_EMAIL=your@gmail.com
+```
+
+**For Local Proxy:**
+```
+PROVIDER_API_KEY=your-api-key
+PROVIDER_BASE_URL=https://integrate.api.nvidia.com/v1
+MODEL=moonshotai/kimi-k2.5
+```
+
+## Local Config
+
+User credentials stored in `~/.cc-zol/`:
+- `config.json` - Email, token, model
+- `server.pid` - Background server PID
+- `server.port` - Current server port
+- `server.log` - Server logs
+
+## MongoDB Schema
+
+Collection: `cc_zol.users`
+```json
+{
+    "email": "user@gmail.com",
+    "verification_code": "123456",
+    "verification_code_expires": datetime,
+    "intercept_token": "abc123...",
+    "verified": true,
+    "created_at": datetime
+}
+```
