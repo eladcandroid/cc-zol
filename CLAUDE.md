@@ -38,7 +38,19 @@ cc-zol is a CLI that lets anyone use Claude Code with any OpenAI-compatible API.
 └───────────────┼─────────────────────────────────────────────────┘
                 │
                 ▼ (OpenAI format)
-        Provider API (e.g., NVIDIA NIM)
+        Provider API (e.g., OpenAI, NVIDIA NIM)
+```
+
+## Installation
+
+### For Users (one command)
+```bash
+curl -fsSL https://raw.githubusercontent.com/eladcandroid/cc-zol/main/install.sh | bash
+```
+
+### For Admins (auth server setup)
+```bash
+curl -fsSL https://raw.githubusercontent.com/eladcandroid/cc-zol/main/setup-server.sh | bash
 ```
 
 ## Commands
@@ -56,7 +68,7 @@ cc-zol stop         # Stop the background server
 ### Run Auth Server (for hosting)
 ```bash
 # With PM2 (recommended)
-pm2 start ecosystem.config.cjs
+pm2 start "uv run uvicorn auth_server:app --host 0.0.0.0 --port 8083" --name cc-zol-auth
 
 # Or directly
 uv run uvicorn auth_server:app --host 0.0.0.0 --port 8083
@@ -116,6 +128,8 @@ uv run pytest -x                     # Stop on first failure
 |------|---------|
 | `server.py` | Local proxy entry point |
 | `auth_server.py` | Remote auth server entry point |
+| `install.sh` | User installer (curl \| bash) |
+| `setup-server.sh` | Admin server setup script |
 | `ecosystem.config.cjs` | PM2 config for auth server (gitignored) |
 | `.env` | Local secrets (gitignored) |
 | `.env.example` | Template for .env |
@@ -144,8 +158,8 @@ SMTP_FROM_EMAIL=your@gmail.com
 **For Local Proxy:**
 ```
 PROVIDER_API_KEY=your-api-key
-PROVIDER_BASE_URL=https://integrate.api.nvidia.com/v1
-MODEL=moonshotai/kimi-k2.5
+PROVIDER_BASE_URL=https://api.openai.com/v1
+MODEL=gpt-4o
 ```
 
 ## Local Config

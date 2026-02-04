@@ -20,18 +20,20 @@ Use **Claude Code CLI** with any OpenAI-compatible API via email verification.
         Provider API (OpenAI-compatible)
 ```
 
-## Quick Start (Users)
+---
 
-### 1. Install
+## For Users
+
+### Install (one command)
+
 ```bash
-# Using uv (recommended)
-uv tool install git+https://github.com/eladcandroid/cc-zol.git
-
-# Or using pip
-pip install git+https://github.com/eladcandroid/cc-zol.git
+curl -fsSL https://raw.githubusercontent.com/eladcandroid/cc-zol/main/install.sh | bash
 ```
 
-### 2. Run
+This installs `uv` (if needed) and the `cc-zol` CLI.
+
+### Run
+
 ```bash
 cc-zol
 ```
@@ -44,6 +46,7 @@ On first run:
 5. Claude Code starts automatically
 
 ### Commands
+
 ```bash
 cc-zol              # Login if needed, then start Claude
 cc-zol login        # Force re-login with new email
@@ -55,68 +58,89 @@ cc-zol stop         # Stop the background server
 
 ---
 
-## Hosting (Admins)
+## For Admins (Hosting)
 
-If you want to host your own cc-zol auth server:
+### Quick Setup (one command)
 
-### Prerequisites
-- [uv](https://github.com/astral-sh/uv)
-- MongoDB running locally (or remote)
-- SMTP credentials (Gmail app password works)
+```bash
+curl -fsSL https://raw.githubusercontent.com/eladcandroid/cc-zol/main/setup-server.sh | bash
+```
 
-### 1. Clone & Configure
+This clones the repo to `~/cc-zol`, installs dependencies, and shows next steps.
+
+### Manual Setup
+
+#### 1. Prerequisites
+
+**MongoDB** (choose one):
+```bash
+# Docker (easiest)
+docker run -d --name mongodb -p 27017:27017 mongo:latest
+
+# macOS
+brew install mongodb-community && brew services start mongodb-community
+
+# Ubuntu/Debian
+sudo apt install mongodb && sudo systemctl start mongodb
+```
+
+#### 2. Clone & Configure
+
 ```bash
 git clone https://github.com/eladcandroid/cc-zol.git
 cd cc-zol
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` with your settings:
 ```dotenv
-# Auth Server
-MONGODB_URI=mongodb://localhost:27017
-ADMIN_PASSWORD=your-admin-password
+# Required: Admin password for dashboard
+ADMIN_PASSWORD=your-secure-password
+
+# Required: Email verification (Gmail example)
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=your@gmail.com
 SMTP_PASSWORD=your-app-password
 SMTP_FROM_EMAIL=your@gmail.com
 
-# Provider (for local proxy)
+# Required: Your OpenAI-compatible provider
 PROVIDER_API_KEY=your-api-key
-PROVIDER_BASE_URL=https://integrate.api.nvidia.com/v1
-MODEL=moonshotai/kimi-k2.5
+PROVIDER_BASE_URL=https://api.openai.com/v1
+MODEL=gpt-4o
 ```
 
-### 2. Run Auth Server
+#### 3. Run the Auth Server
 
-**With PM2 (recommended):**
 ```bash
-# Create ecosystem.config.cjs with your settings (see CLAUDE.md)
-pm2 start ecosystem.config.cjs
-pm2 save
-```
+# Install uv if needed
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-**Or directly:**
-```bash
+# Run server
 uv run uvicorn auth_server:app --host 0.0.0.0 --port 8083
 ```
 
-### 3. Update Auth Server URL
+#### 4. Production (PM2)
+
+```bash
+npm install -g pm2
+pm2 start "uv run uvicorn auth_server:app --host 0.0.0.0 --port 8083" --name cc-zol-auth
+pm2 save
+pm2 startup  # Auto-start on reboot
+```
+
+#### 5. Update Auth Server URL
 
 In `zol/config.py`, set your hosted URL:
 ```python
 AUTH_SERVER_URL = "https://your-domain.com"
 ```
 
-### 4. Publish
-```bash
-git add -A
-git commit -m "Configure for production"
-git push
-```
+Then commit and push. Users installing from your repo will connect to your server.
 
-Users can now install your configured version.
+### Admin Dashboard
+
+Access at `http://your-server:8083/admin` with your `ADMIN_PASSWORD`.
 
 ---
 
@@ -126,7 +150,7 @@ Users can now install your configured version.
 |----------|-------------|---------|
 | `PROVIDER_API_KEY` | Your API key | required |
 | `PROVIDER_BASE_URL` | API endpoint URL | `https://api.openai.com/v1` |
-| `MODEL` | Model for all requests | `moonshotai/kimi-k2.5` |
+| `MODEL` | Model for all requests | `gpt-4o` |
 | `MONGODB_URI` | MongoDB connection | `mongodb://localhost:27017` |
 | `ADMIN_PASSWORD` | Admin UI password | `admin` |
 | `SMTP_HOST` | SMTP server | `""` (console fallback) |
@@ -168,26 +192,5 @@ cc-zol/
 ├── cli/                 # Claude subprocess manager
 ├── server.py            # Local proxy entry point
 ├── auth_server.py       # Auth server entry point
-└── ecosystem.config.cjs # PM2 config (gitignored)
-```
-
-### Adding a Provider
-
-Extend `BaseProvider` in `providers/base.py`:
-
-```python
-from providers.base import BaseProvider, ProviderConfig
-
-class MyProvider(BaseProvider):
-    async def complete(self, request):
-        # Make API call, return raw JSON
-        pass
-
-    async def stream_response(self, request, input_tokens=0):
-        # Yield Anthropic SSE format events
-        pass
-
-    def convert_response(self, response_json, original_request):
-        # Convert to Anthropic response format
-        pass
+└── install.sh           # User installer
 ```
