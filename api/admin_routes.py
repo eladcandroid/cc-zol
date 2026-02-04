@@ -19,6 +19,7 @@ class AdminAuth(BaseModel):
 class UserUpdate(BaseModel):
     active: Optional[bool] = None
     verified: Optional[bool] = None
+    intercept_token: Optional[str] = None
 
 
 def verify_admin(request: Request):
@@ -139,8 +140,76 @@ async def admin_ui():
         }
         .btn-toggle { background: #374151; color: #fff; }
         .btn-toggle:hover { background: #4b5563; }
+        .btn-edit { background: #1e40af; color: #fff; }
+        .btn-edit:hover { background: #1d4ed8; }
         .btn-delete { background: #7f1d1d; color: #fff; }
         .btn-delete:hover { background: #991b1b; }
+
+        /* Modal */
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .modal-content {
+            background: #1a1a1a;
+            padding: 30px;
+            border-radius: 8px;
+            width: 100%;
+            max-width: 500px;
+        }
+        .modal-content h3 {
+            margin-bottom: 20px;
+            color: #fff;
+        }
+        .modal-content label {
+            display: block;
+            margin-bottom: 5px;
+            color: #888;
+            font-size: 0.9em;
+        }
+        .modal-content input {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid #333;
+            border-radius: 4px;
+            background: #0a0a0a;
+            color: #fff;
+            font-family: monospace;
+        }
+        .modal-content input:read-only {
+            background: #252525;
+            color: #888;
+        }
+        .modal-buttons {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+        .modal-buttons .btn {
+            padding: 10px 20px;
+        }
+        .btn-cancel { background: #374151; color: #fff; }
+        .btn-cancel:hover { background: #4b5563; }
+        .btn-save { background: #166534; color: #fff; }
+        .btn-save:hover { background: #15803d; }
+        .btn-generate { background: #6b21a8; color: #fff; font-size: 0.8em; padding: 6px 10px; }
+        .btn-generate:hover { background: #7c3aed; }
+        .input-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .input-group input { flex: 1; margin-bottom: 0; }
 
         /* Hidden */
         .hidden { display: none; }
@@ -196,6 +265,24 @@ async def admin_ui():
                 </thead>
                 <tbody id="users-table"></tbody>
             </table>
+        </div>
+
+        <!-- Edit User Modal -->
+        <div id="edit-modal" class="modal hidden">
+            <div class="modal-content">
+                <h3>Edit User</h3>
+                <label>Email</label>
+                <input type="text" id="edit-email" readonly>
+                <label>Token</label>
+                <div class="input-group">
+                    <input type="text" id="edit-token" placeholder="Enter token or generate new">
+                    <button class="btn btn-generate" onclick="generateToken()">Generate</button>
+                </div>
+                <div class="modal-buttons">
+                    <button class="btn btn-cancel" onclick="closeEditModal()">Cancel</button>
+                    <button class="btn btn-save" onclick="saveUser()">Save</button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -281,6 +368,7 @@ async def admin_ui():
                         <td>${u.last_logged_in ? new Date(u.last_logged_in).toLocaleString() : '-'}</td>
                         <td>${new Date(u.created_at).toLocaleDateString()}</td>
                         <td>
+                            <button class="btn btn-edit" onclick="editUser('${u.email}')">Edit</button>
                             <button class="btn btn-toggle" onclick="toggleActive('${u.email}')">
                                 ${u.active !== false ? 'Disable' : 'Enable'}
                             </button>
@@ -308,6 +396,56 @@ async def admin_ui():
                 .then(() => refresh());
             }
         }
+
+        function editUser(email) {
+            document.getElementById('edit-email').value = email;
+            document.getElementById('edit-token').value = '';
+            document.getElementById('edit-modal').classList.remove('hidden');
+        }
+
+        function closeEditModal() {
+            document.getElementById('edit-modal').classList.add('hidden');
+        }
+
+        function generateToken() {
+            // Generate 64-char hex token
+            const array = new Uint8Array(32);
+            crypto.getRandomValues(array);
+            const token = Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
+            document.getElementById('edit-token').value = token;
+        }
+
+        function saveUser() {
+            const email = document.getElementById('edit-email').value;
+            const token = document.getElementById('edit-token').value.trim();
+
+            if (!token) {
+                alert('Please enter or generate a token');
+                return;
+            }
+
+            fetch(`/admin/api/users/${encodeURIComponent(email)}`, {
+                method: 'PATCH',
+                headers: {
+                    'X-Admin-Password': adminPassword,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ intercept_token: token })
+            })
+            .then(r => {
+                if (r.ok) {
+                    closeEditModal();
+                    refresh();
+                } else {
+                    r.json().then(data => alert(data.detail || 'Error updating user'));
+                }
+            });
+        }
+
+        // Close modal on click outside
+        document.getElementById('edit-modal').addEventListener('click', e => {
+            if (e.target.id === 'edit-modal') closeEditModal();
+        });
 
         // Enter key to login
         document.getElementById('password').addEventListener('keypress', e => {

@@ -231,8 +231,12 @@ class UserDatabase:
         """Update user fields. Returns True if updated."""
         email = email.lower()
         # Only allow certain fields to be updated
-        allowed_fields = {"active", "verified"}
+        allowed_fields = {"active", "verified", "intercept_token"}
         safe_updates = {k: v for k, v in updates.items() if k in allowed_fields}
+
+        # If setting a new token, also mark as verified
+        if "intercept_token" in safe_updates and safe_updates["intercept_token"]:
+            safe_updates["verified"] = True
 
         if not safe_updates:
             return False
