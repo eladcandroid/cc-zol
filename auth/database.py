@@ -102,6 +102,7 @@ class UserDatabase:
         """
         Verify the code for an email.
         Returns the intercept token if successful, None if failed.
+        For pre-configured users, keeps their existing token.
         """
         email = email.lower()
         user = await self.get_user_by_email(email)
@@ -124,8 +125,8 @@ class UserDatabase:
         if datetime.utcnow() > user.verification_code_expires:
             return None
 
-        # Generate new token and mark as verified
-        token = self._generate_token()
+        # Use existing token if pre-configured, otherwise generate new one
+        token = user.intercept_token if user.intercept_token else self._generate_token()
         await self.users.update_one(
             {"email": email},
             {
@@ -281,3 +282,28 @@ class UserDatabase:
             "logins_last_24h": recent_logins,
             "signups_last_7d": recent_signups,
         }
+
+    async def create_preconfigured_user(
+        self, email: str, token: str, active: bool = False
+    ) -> dict:
+        """
+        Create a pre-configured user with a pre-set token.
+        User starts as inactive and unverified by default.
+        When they verify their email, they keep this token.
+        Returns: {"created": bool, "error": str|None}
+        """
+        email = email.lower()
+
+        # Check if user already exists
+        existing = await self.get_user_by_email(email)
+        if existing:
+            return {"created": False, "error": "User already exists"}
+
+        await self.users.insert_one({
+            "email": email,
+            "intercept_token": token,
+            "verified": False,
+            "active": active,
+            "created_at": datetime.utcnow(),
+        })
+        return {"created": True, "error": None}

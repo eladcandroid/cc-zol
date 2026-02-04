@@ -22,6 +22,12 @@ class UserUpdate(BaseModel):
     intercept_token: Optional[str] = None
 
 
+class UserCreate(BaseModel):
+    email: str
+    intercept_token: str
+    active: bool = False
+
+
 def verify_admin(request: Request):
     """Simple admin auth via header."""
     auth = request.headers.get("X-Admin-Password")
@@ -227,6 +233,17 @@ async def admin_ui():
             padding: 8px 16px;
         }
         .btn-refresh:hover { background: #374151; }
+        .btn-add {
+            background: #166534;
+            color: #fff;
+            padding: 8px 16px;
+            margin-right: 10px;
+        }
+        .btn-add:hover { background: #15803d; }
+        .header-buttons {
+            display: flex;
+            gap: 10px;
+        }
     </style>
 </head>
 <body>
@@ -243,7 +260,10 @@ async def admin_ui():
         <div id="dashboard" class="hidden">
             <div class="header">
                 <h1>cc-zol Admin</h1>
-                <button class="btn btn-refresh" onclick="refresh()">Refresh</button>
+                <div class="header-buttons">
+                    <button class="btn btn-add" onclick="openAddModal()">+ Add User</button>
+                    <button class="btn btn-refresh" onclick="refresh()">Refresh</button>
+                </div>
             </div>
 
             <!-- Stats -->
@@ -276,11 +296,37 @@ async def admin_ui():
                 <label>Token</label>
                 <div class="input-group">
                     <input type="text" id="edit-token" placeholder="Enter token or generate new">
-                    <button class="btn btn-generate" onclick="generateToken()">Generate</button>
+                    <button class="btn btn-generate" onclick="generateToken('edit-token')">Generate</button>
                 </div>
                 <div class="modal-buttons">
                     <button class="btn btn-cancel" onclick="closeEditModal()">Cancel</button>
                     <button class="btn btn-save" onclick="saveUser()">Save</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Add User Modal -->
+        <div id="add-modal" class="modal hidden">
+            <div class="modal-content">
+                <h3>Add Pre-configured User</h3>
+                <label>Email</label>
+                <input type="email" id="add-email" placeholder="user@example.com">
+                <label>Token</label>
+                <div class="input-group">
+                    <input type="text" id="add-token" placeholder="Enter token or generate new">
+                    <button class="btn btn-generate" onclick="generateToken('add-token')">Generate</button>
+                </div>
+                <label style="display: flex; align-items: center; gap: 8px; margin-top: 10px;">
+                    <input type="checkbox" id="add-active">
+                    <span>Active (user can login immediately after verification)</span>
+                </label>
+                <p style="color: #888; font-size: 0.85em; margin-top: 15px;">
+                    User will need to verify email before using the CLI.
+                    Their pre-configured token will be preserved.
+                </p>
+                <div class="modal-buttons">
+                    <button class="btn btn-cancel" onclick="closeAddModal()">Cancel</button>
+                    <button class="btn btn-save" onclick="createUser()">Create User</button>
                 </div>
             </div>
         </div>
@@ -407,12 +453,12 @@ async def admin_ui():
             document.getElementById('edit-modal').classList.add('hidden');
         }
 
-        function generateToken() {
+        function generateToken(targetId) {
             // Generate 64-char hex token
             const array = new Uint8Array(32);
             crypto.getRandomValues(array);
             const token = Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
-            document.getElementById('edit-token').value = token;
+            document.getElementById(targetId).value = token;
         }
 
         function saveUser() {
@@ -442,9 +488,56 @@ async def admin_ui():
             });
         }
 
+        // Add User Modal functions
+        function openAddModal() {
+            document.getElementById('add-email').value = '';
+            document.getElementById('add-token').value = '';
+            document.getElementById('add-active').checked = false;
+            document.getElementById('add-modal').classList.remove('hidden');
+        }
+
+        function closeAddModal() {
+            document.getElementById('add-modal').classList.add('hidden');
+        }
+
+        function createUser() {
+            const email = document.getElementById('add-email').value.trim();
+            const token = document.getElementById('add-token').value.trim();
+            const active = document.getElementById('add-active').checked;
+
+            if (!email) {
+                alert('Please enter an email');
+                return;
+            }
+            if (!token) {
+                alert('Please enter or generate a token');
+                return;
+            }
+
+            fetch('/admin/api/users', {
+                method: 'POST',
+                headers: {
+                    'X-Admin-Password': adminPassword,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ email, intercept_token: token, active })
+            })
+            .then(r => {
+                if (r.ok) {
+                    closeAddModal();
+                    refresh();
+                } else {
+                    r.json().then(data => alert(data.detail || 'Error creating user'));
+                }
+            });
+        }
+
         // Close modal on click outside
         document.getElementById('edit-modal').addEventListener('click', e => {
             if (e.target.id === 'edit-modal') closeEditModal();
+        });
+        document.getElementById('add-modal').addEventListener('click', e => {
+            if (e.target.id === 'add-modal') closeAddModal();
         });
 
         // Enter key to login
@@ -517,3 +610,22 @@ async def delete_user(email: str, request: Request, _: bool = Depends(verify_adm
     if not success:
         raise HTTPException(status_code=404, detail="User not found")
     return {"email": email, "deleted": True}
+
+
+@router.post("/api/users")
+async def create_user(user_data: UserCreate, request: Request, _: bool = Depends(verify_admin)):
+    """Create a pre-configured user with a pre-set token."""
+    user_db = request.app.state.user_db
+    if not user_db:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    result = await user_db.create_preconfigured_user(
+        email=user_data.email,
+        token=user_data.intercept_token,
+        active=user_data.active,
+    )
+
+    if not result["created"]:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    return {"email": user_data.email, "created": True}
