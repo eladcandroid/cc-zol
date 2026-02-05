@@ -250,7 +250,7 @@ async def send_test_prompt(port: int, prompt: str, model: str) -> tuple[bool, st
                 f"http://localhost:{port}/v1/messages",
                 json={
                     "model": model,
-                    "max_tokens": 100,
+                    "max_tokens": 256,
                     "messages": [{"role": "user", "content": prompt}],
                 },
                 headers={
@@ -262,15 +262,28 @@ async def send_test_prompt(port: int, prompt: str, model: str) -> tuple[bool, st
 
             if response.status_code == 200:
                 data = response.json()
-                # Extract text from response
                 content = data.get("content", [])
+
                 if content:
+                    # Extract text and thinking from response
                     text = ""
+                    thinking = ""
                     for block in content:
                         if block.get("type") == "text":
                             text += block.get("text", "")
+                        elif block.get("type") == "thinking":
+                            thinking += block.get("thinking", "")
+
+                    # Show text if available, otherwise show thinking preview
+                    text = text.strip()
+                    thinking = thinking.strip()
+
                     if text:
-                        return True, text.strip()
+                        return True, text
+                    elif thinking:
+                        preview = thinking[:150] + "..." if len(thinking) > 150 else thinking
+                        return True, f"[Thinking] {preview}"
+
                 return False, "Empty response from API"
             else:
                 error = response.json().get("error", {}).get("message", response.text)
@@ -306,16 +319,13 @@ def test(prompt: str):
     model = config.get_model() or provider_config.get("model")
     provider_config["model"] = model
 
-    # Ensure server is running
+    # Ensure server is running (don't restart if already running)
     if not server_manager.is_running():
         print_info("Starting server...")
         port = server_manager.start(provider_config=provider_config)
     else:
         port = server_manager.get_port()
-        # Restart to ensure fresh config
-        print_info("Restarting server with fresh config...")
-        server_manager.stop()
-        port = server_manager.start(provider_config=provider_config)
+        print_info(f"Using existing server on port {port}")
 
     print_info(f"Model: {model}")
     print_info(f"Prompt: {prompt}")
