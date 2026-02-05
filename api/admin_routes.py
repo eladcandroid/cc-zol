@@ -210,6 +210,8 @@ async def admin_ui():
         .btn-save:hover { background: #15803d; }
         .btn-generate { background: #6b21a8; color: #fff; font-size: 0.8em; padding: 6px 10px; }
         .btn-generate:hover { background: #7c3aed; }
+        .btn-copy { background: #0369a1; color: #fff; font-size: 0.8em; padding: 6px 10px; }
+        .btn-copy:hover { background: #0284c7; }
         .input-group {
             display: flex;
             gap: 10px;
@@ -296,6 +298,7 @@ async def admin_ui():
                 <label>Token</label>
                 <div class="input-group">
                     <input type="text" id="edit-token" placeholder="Enter token or generate new">
+                    <button class="btn btn-copy" onclick="copyToken('edit-token')">Copy</button>
                     <button class="btn btn-generate" onclick="generateToken('edit-token')">Generate</button>
                 </div>
                 <div class="modal-buttons">
@@ -314,6 +317,7 @@ async def admin_ui():
                 <label>Token</label>
                 <div class="input-group">
                     <input type="text" id="add-token" placeholder="Enter token or generate new">
+                    <button class="btn btn-copy" onclick="copyToken('add-token')">Copy</button>
                     <button class="btn btn-generate" onclick="generateToken('add-token')">Generate</button>
                 </div>
                 <label style="display: flex; align-items: center; gap: 8px; margin-top: 10px;">
@@ -445,8 +449,20 @@ async def admin_ui():
 
         function editUser(email) {
             document.getElementById('edit-email').value = email;
-            document.getElementById('edit-token').value = '';
+            document.getElementById('edit-token').value = 'Loading...';
             document.getElementById('edit-modal').classList.remove('hidden');
+
+            // Fetch full user details including full token
+            fetch(`/admin/api/users/${encodeURIComponent(email)}`, {
+                headers: { 'X-Admin-Password': adminPassword }
+            })
+            .then(r => r.json())
+            .then(user => {
+                document.getElementById('edit-token').value = user.intercept_token || '';
+            })
+            .catch(() => {
+                document.getElementById('edit-token').value = '';
+            });
         }
 
         function closeEditModal() {
@@ -459,6 +475,20 @@ async def admin_ui():
             crypto.getRandomValues(array);
             const token = Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
             document.getElementById(targetId).value = token;
+        }
+
+        function copyToken(targetId) {
+            const input = document.getElementById(targetId);
+            const token = input.value;
+            if (!token || token === 'Loading...') return;
+
+            navigator.clipboard.writeText(token).then(() => {
+                // Brief visual feedback
+                const btn = event.target;
+                const originalText = btn.textContent;
+                btn.textContent = 'Copied!';
+                setTimeout(() => btn.textContent = originalText, 1500);
+            });
         }
 
         function saveUser() {
@@ -567,6 +597,19 @@ async def list_users(request: Request, _: bool = Depends(verify_admin)):
     if not user_db:
         raise HTTPException(status_code=503, detail="Database not available")
     return await user_db.list_users()
+
+
+@router.get("/api/users/{email}")
+async def get_user(email: str, request: Request, _: bool = Depends(verify_admin)):
+    """Get full user details including full token (for edit modal)."""
+    user_db = request.app.state.user_db
+    if not user_db:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    user = await user_db.get_user_for_admin(email)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
 
 
 @router.post("/api/users/{email}/toggle")

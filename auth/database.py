@@ -205,7 +205,7 @@ class UserDatabase:
         users = []
         async for doc in cursor:
             doc.pop("_id", None)
-            # Don't expose full token, just show if it exists
+            # Don't expose full token in list, just show if it exists
             if doc.get("intercept_token"):
                 doc["has_token"] = True
                 doc["intercept_token"] = doc["intercept_token"][:8] + "..."
@@ -213,6 +213,15 @@ class UserDatabase:
                 doc["has_token"] = False
             users.append(doc)
         return users
+
+    async def get_user_for_admin(self, email: str) -> Optional[dict]:
+        """Get full user details for admin (includes full token)."""
+        email = email.lower()
+        doc = await self.users.find_one({"email": email})
+        if doc:
+            doc.pop("_id", None)
+            return doc
+        return None
 
     async def toggle_user_active(self, email: str) -> Optional[bool]:
         """Toggle user active status. Returns new status or None if user not found."""
