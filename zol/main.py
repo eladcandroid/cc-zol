@@ -160,6 +160,12 @@ def login():
             print_error("Failed to get provider configuration")
             sys.exit(1)
 
+        # User's local model selection takes precedence over server default
+        model = config.get_model() or provider_config.get("model")
+
+        # Override the provider_config model with user's selection for the server
+        provider_config["model"] = model
+
         # Start/restart server with provider config
         if server_manager.is_running():
             server_manager.stop()
@@ -167,7 +173,7 @@ def login():
         port = server_manager.start(provider_config=provider_config)
 
         print_info("Starting Claude...")
-        start_claude(token, port, provider_config.get("model", config.get_model()))
+        start_claude(token, port, model)
 
 
 @cli.command()
@@ -357,6 +363,12 @@ def main_flow():
         print_error("Failed to get provider configuration. Try logging in again.")
         sys.exit(1)
 
+    # User's local model selection takes precedence over server default
+    model = config.get_model() or provider_config.get("model")
+
+    # Override the provider_config model with user's selection for the server
+    provider_config["model"] = model
+
     # Ensure local proxy server is running with provider config
     if not server_manager.is_running():
         print_info("Starting server...")
@@ -366,11 +378,10 @@ def main_flow():
         print_info("Restarting server with fresh config...")
         server_manager.stop()
         port = server_manager.start(provider_config=provider_config)
-
     print_info(f"Welcome back, {config.email}")
-    print_info(f"Model: {provider_config.get('model', config.get_model())}")
+    print_info(f"Model: {model}")
     print_info("Starting Claude...")
-    start_claude(config.token, port, provider_config.get("model", config.get_model()))
+    start_claude(config.token, port, model)
 
 
 if __name__ == "__main__":
