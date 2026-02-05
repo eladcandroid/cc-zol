@@ -239,6 +239,98 @@ def model():
         print_info(f"Model unchanged: {new_model}")
 
 
+async def send_test_prompt(port: int, prompt: str, model: str) -> tuple[bool, str]:
+    """Send a test prompt to the local proxy and check for response.
+
+    Returns (success, message) tuple.
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"http://localhost:{port}/v1/messages",
+                json={
+                    "model": model,
+                    "max_tokens": 100,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": "test",
+                },
+                timeout=60.0,
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                # Extract text from response
+                content = data.get("content", [])
+                if content:
+                    text = ""
+                    for block in content:
+                        if block.get("type") == "text":
+                            text += block.get("text", "")
+                    if text:
+                        return True, text.strip()
+                return False, "Empty response from API"
+            else:
+                error = response.json().get("error", {}).get("message", response.text)
+                return False, f"API error ({response.status_code}): {error}"
+
+        except httpx.TimeoutException:
+            return False, "Request timed out (60s)"
+        except httpx.RequestError as e:
+            return False, f"Connection error: {e}"
+        except Exception as e:
+            return False, f"Error: {e}"
+
+
+@cli.command()
+@click.argument("prompt", default="Say 'hello' in one word", required=False)
+def test(prompt: str):
+    """Test the API with a prompt and check if it responds."""
+    config = LocalConfig.load()
+    server_manager = ServerManager()
+
+    if not config.is_logged_in():
+        print_error("Not logged in. Run 'cc-zol login' first.")
+        sys.exit(1)
+
+    # Fetch provider config
+    print_info("Fetching configuration...")
+    provider_config = run_async(fetch_provider_config(AUTH_SERVER_URL, config.token))
+    if not provider_config:
+        print_error("Failed to get provider configuration.")
+        sys.exit(1)
+
+    # User's local model selection takes precedence
+    model = config.get_model() or provider_config.get("model")
+    provider_config["model"] = model
+
+    # Ensure server is running
+    if not server_manager.is_running():
+        print_info("Starting server...")
+        port = server_manager.start(provider_config=provider_config)
+    else:
+        port = server_manager.get_port()
+        # Restart to ensure fresh config
+        print_info("Restarting server with fresh config...")
+        server_manager.stop()
+        port = server_manager.start(provider_config=provider_config)
+
+    print_info(f"Model: {model}")
+    print_info(f"Prompt: {prompt}")
+    print_info("Sending test request...")
+
+    success, result = run_async(send_test_prompt(port, prompt, model))
+
+    if success:
+        print_success("API is working!")
+        print_info(f"Response: {result[:200]}{'...' if len(result) > 200 else ''}")
+    else:
+        print_error(f"API test failed: {result}")
+        sys.exit(1)
+
+
 def get_latest_commit_sha() -> Optional[str]:
     """Fetch the latest commit SHA from GitHub."""
     try:
