@@ -70,9 +70,6 @@ class ServerManager:
         # Start uvicorn as background process
         log_file = open(self.config.SERVER_LOG_FILE, "w")
 
-        # Get the path to the server module
-        server_module_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
         # Build environment - pass provider config securely (in memory only)
         env = os.environ.copy()
         if provider_config:
@@ -80,12 +77,13 @@ class ServerManager:
             env["PROVIDER_BASE_URL"] = provider_config.get("provider_base_url", "")
             env["MODEL"] = provider_config.get("model", "")
 
+        # Use api.app:app directly (works when installed as package)
         process = subprocess.Popen(
             [
                 sys.executable,
                 "-m",
                 "uvicorn",
-                "server:app",
+                "api.app:app",
                 "--host",
                 "127.0.0.1",
                 "--port",
@@ -93,7 +91,6 @@ class ServerManager:
             ],
             stdout=log_file,
             stderr=log_file,
-            cwd=server_module_dir,
             env=env,
             start_new_session=True,  # Detach from terminal
         )
