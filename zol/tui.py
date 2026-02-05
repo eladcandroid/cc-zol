@@ -52,7 +52,8 @@ def print_info(message: str) -> None:
 
 def load_available_models() -> list[dict]:
     """Load available models from models.json."""
-    package_dir = Path(__file__).parent.parent
+    # Look in the same directory as this file (zol package)
+    package_dir = Path(__file__).parent
     models_file = package_dir / "models.json"
 
     if not models_file.exists():

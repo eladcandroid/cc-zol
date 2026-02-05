@@ -32,7 +32,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["zol", "auth", "api", "cli", "config", "messaging", "providers"]
-include = ["models.json"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"zol/models.json" = "zol/models.json"
 
 [dependency-groups]
 dev = [
