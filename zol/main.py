@@ -63,6 +63,30 @@ async def verify_code_and_get_token(
             return None
 
 
+async def fetch_provider_config(server_url: str, token: str) -> Optional[dict]:
+    """Fetch provider configuration from auth server.
+
+    Returns dict with provider_api_key, provider_base_url, model.
+    User never stores these locally - fetched fresh each session.
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(
+                f"{server_url}/auth/config",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=30.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            else:
+                error = response.json().get("detail", "Failed to get config")
+                print_error(f"Config error: {error}")
+                return None
+        except httpx.RequestError as e:
+            print_error(f"Failed to connect to server: {e}")
+            return None
+
+
 def start_claude(token: str, port: int, model: str) -> None:
     """Start Claude Code with the proxy environment variables."""
     env = os.environ.copy()
@@ -129,15 +153,21 @@ def login():
     # Perform login with model selection (against remote auth server)
     token = do_login(config, with_model_selection=True)
     if token:
-        # Ensure local proxy server is running
-        if not server_manager.is_running():
-            print_info("Starting server...")
-            port = server_manager.start()
-        else:
-            port = server_manager.get_port()
+        # Fetch provider config from auth server
+        print_info("Fetching configuration...")
+        provider_config = run_async(fetch_provider_config(AUTH_SERVER_URL, token))
+        if not provider_config:
+            print_error("Failed to get provider configuration")
+            sys.exit(1)
+
+        # Start/restart server with provider config
+        if server_manager.is_running():
+            server_manager.stop()
+        print_info("Starting server...")
+        port = server_manager.start(provider_config=provider_config)
 
         print_info("Starting Claude...")
-        start_claude(token, port, config.get_model())
+        start_claude(token, port, provider_config.get("model", config.get_model()))
 
 
 @cli.command()
@@ -214,17 +244,27 @@ def main_flow():
         if not token:
             sys.exit(1)
 
-    # Ensure local proxy server is running
+    # Fetch provider config from auth server (never stored locally)
+    print_info("Fetching configuration...")
+    provider_config = run_async(fetch_provider_config(AUTH_SERVER_URL, config.token))
+    if not provider_config:
+        print_error("Failed to get provider configuration. Try logging in again.")
+        sys.exit(1)
+
+    # Ensure local proxy server is running with provider config
     if not server_manager.is_running():
         print_info("Starting server...")
-        port = server_manager.start()
+        port = server_manager.start(provider_config=provider_config)
     else:
-        port = server_manager.get_port()
+        # Server already running - restart to use fresh config
+        print_info("Restarting server with fresh config...")
+        server_manager.stop()
+        port = server_manager.start(provider_config=provider_config)
 
     print_info(f"Welcome back, {config.email}")
-    print_info(f"Model: {config.get_model()}")
+    print_info(f"Model: {provider_config.get('model', config.get_model())}")
     print_info("Starting Claude...")
-    start_claude(config.token, port, config.get_model())
+    start_claude(config.token, port, provider_config.get("model", config.get_model()))
 
 
 if __name__ == "__main__":

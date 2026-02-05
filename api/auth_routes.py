@@ -1,9 +1,10 @@
 """Authentication routes for cc-zol."""
 
 import logging
+from typing import Optional
 from pydantic import BaseModel, EmailStr
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Header
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,14 @@ class TokenResponse(BaseModel):
 
     token: str
     email: str
+
+
+class ProviderConfig(BaseModel):
+    """Provider configuration returned to authenticated users."""
+
+    provider_api_key: str
+    provider_base_url: str
+    model: str
 
 
 @router.post("/send-code")
@@ -85,3 +94,44 @@ async def verify_code(request_data: VerifyRequest, request: Request):
     except Exception as e:
         logger.error(f"Failed to verify code: {e}")
         raise HTTPException(status_code=500, detail="Verification failed")
+
+
+@router.get("/config", response_model=ProviderConfig)
+async def get_provider_config(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    """Get provider configuration for authenticated users.
+
+    Requires Authorization header with user token.
+    Returns API key, base URL, and model - user never stores these locally.
+    """
+    user_db = getattr(request.app.state, "user_db", None)
+    settings = getattr(request.app.state, "settings", None)
+
+    if not user_db:
+        raise HTTPException(status_code=503, detail="Authentication not configured")
+
+    # Validate token
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header required")
+
+    # Support "Bearer <token>" or just "<token>"
+    token = authorization
+    if authorization.lower().startswith("bearer "):
+        token = authorization[7:]
+
+    # Check if token is valid
+    user = await user_db.get_user_by_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    # Return provider config from server settings
+    if not settings:
+        raise HTTPException(status_code=503, detail="Server not configured")
+
+    return ProviderConfig(
+        provider_api_key=settings.provider_api_key,
+        provider_base_url=settings.provider_base_url,
+        model=settings.model,
+    )

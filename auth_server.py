@@ -61,6 +61,7 @@ async def lifespan(app: FastAPI):
     # Store in app state
     app.state.user_db = user_db
     app.state.email_service = email_service
+    app.state.settings = settings
 
     yield
 

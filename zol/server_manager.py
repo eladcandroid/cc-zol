@@ -47,10 +47,15 @@ class ServerManager:
         """Get the port the server is running on."""
         return self.config.get_server_port()
 
-    def start(self, port: Optional[int] = None) -> int:
+    def start(self, port: Optional[int] = None, provider_config: Optional[dict] = None) -> int:
         """
         Start the server in the background.
         Returns the port number.
+
+        Args:
+            port: Optional port to use (auto-finds available if not specified)
+            provider_config: Provider configuration from auth server (api_key, base_url, model).
+                           Passed as environment variables - never written to disk.
         """
         if self.is_running():
             return self.get_port()
@@ -68,6 +73,13 @@ class ServerManager:
         # Get the path to the server module
         server_module_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+        # Build environment - pass provider config securely (in memory only)
+        env = os.environ.copy()
+        if provider_config:
+            env["PROVIDER_API_KEY"] = provider_config.get("provider_api_key", "")
+            env["PROVIDER_BASE_URL"] = provider_config.get("provider_base_url", "")
+            env["MODEL"] = provider_config.get("model", "")
+
         process = subprocess.Popen(
             [
                 sys.executable,
@@ -82,6 +94,7 @@ class ServerManager:
             stdout=log_file,
             stderr=log_file,
             cwd=server_module_dir,
+            env=env,
             start_new_session=True,  # Detach from terminal
         )
 
