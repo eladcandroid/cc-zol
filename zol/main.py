@@ -233,6 +233,54 @@ def model():
         print_info(f"Model unchanged: {new_model}")
 
 
+@cli.command()
+def update():
+    """Update cc-zol to the latest version."""
+    import subprocess
+
+    print_info("Updating cc-zol...")
+
+    # Use uv tool install with --force to update
+    repo_url = "git+https://github.com/eladcandroid/cc-zol.git"
+
+    try:
+        result = subprocess.run(
+            ["uv", "tool", "install", repo_url, "--force"],
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode == 0:
+            print_success("cc-zol updated successfully!")
+            print_info("Restart your terminal or run 'cc-zol' to use the new version.")
+        else:
+            # Check if uv is not installed
+            if "uv" in result.stderr.lower() or result.returncode == 127:
+                print_error("uv is not installed. Installing uv first...")
+                # Try to install uv
+                uv_install = subprocess.run(
+                    ["sh", "-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"],
+                    capture_output=True,
+                    text=True,
+                )
+                if uv_install.returncode == 0:
+                    print_info("uv installed. Retrying update...")
+                    # Retry the update
+                    result = subprocess.run(
+                        ["uv", "tool", "install", repo_url, "--force"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if result.returncode == 0:
+                        print_success("cc-zol updated successfully!")
+                        return
+            print_error(f"Update failed: {result.stderr or result.stdout}")
+
+    except FileNotFoundError:
+        print_error("uv not found. Please install uv first:")
+        print_info("  curl -LsSf https://astral.sh/uv/install.sh | sh")
+
+
 def main_flow():
     """Main flow: login if needed, then start Claude."""
     config = LocalConfig.load()

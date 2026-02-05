@@ -88,6 +88,7 @@ cc-zol logout       # Clear saved credentials
 cc-zol model        # Change the model
 cc-zol status       # Show current user and server status
 cc-zol stop         # Stop the background server
+cc-zol update       # Update to the latest version
 ```
 
 ### Run Auth Server (for hosting)

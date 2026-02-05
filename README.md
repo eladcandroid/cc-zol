@@ -60,6 +60,7 @@ cc-zol logout       # Clear saved credentials
 cc-zol model        # Change the model
 cc-zol status       # Show current status
 cc-zol stop         # Stop the background server
+cc-zol update       # Update to the latest version
 ```
 
 ---
