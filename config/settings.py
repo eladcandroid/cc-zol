@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     # ==================== Optimizations ====================
     enable_network_probe_mock: bool = True
     enable_title_generation_skip: bool = True
+    enable_suggestion_mode_skip: bool = True
+    enable_filepath_extraction_mock: bool = True
 
     # ==================== Provider Core Parameters ====================
     provider_temperature: float = 1.0

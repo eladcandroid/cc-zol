@@ -244,3 +244,144 @@ def get_token_count(
         total_tokens += len(tools) * 5
 
     return max(1, total_tokens)
+
+
+def is_suggestion_mode_request(request_data: MessagesRequest) -> bool:
+    """Check if this is a suggestion mode request.
+
+    Suggestion mode requests contain "[SUGGESTION MODE:" in the user's message,
+    used for auto-suggesting what the user might type next.
+
+    Args:
+        request_data: The incoming request data
+
+    Returns:
+        True if this is a suggestion mode request
+    """
+    for msg in request_data.messages:
+        if msg.role == "user":
+            content = msg.content
+            target = "[SUGGESTION MODE:"
+            if isinstance(content, str) and target in content:
+                return True
+            elif isinstance(content, list):
+                for block in content:
+                    text = getattr(block, "text", "")
+                    if text and isinstance(text, str) and target in text:
+                        return True
+    return False
+
+
+def is_filepath_extraction_request(
+    request_data: MessagesRequest,
+) -> Tuple[bool, str, str]:
+    """Check if this is a filepath extraction request.
+
+    Filepath extraction requests have a single user message with
+    "Command:" and "Output:" sections, asking to extract file paths
+    from command output.
+
+    Args:
+        request_data: The incoming request data
+
+    Returns:
+        Tuple of (is_filepath_request, command, output)
+    """
+    # Must be single message, no tools
+    if len(request_data.messages) != 1 or request_data.messages[0].role != "user":
+        return False, "", ""
+    if request_data.tools:
+        return False, "", ""
+
+    msg = request_data.messages[0]
+    content = ""
+    if isinstance(msg.content, str):
+        content = msg.content
+    elif isinstance(msg.content, list):
+        for block in msg.content:
+            text = getattr(block, "text", "")
+            if text and isinstance(text, str):
+                content += text
+
+    # Must have Command: and Output: markers
+    if "Command:" not in content or "Output:" not in content:
+        return False, "", ""
+
+    # Must ask for filepath extraction
+    if "filepaths" not in content.lower() and "<filepaths>" not in content.lower():
+        return False, "", ""
+
+    try:
+        # Extract command and output
+        cmd_start = content.find("Command:") + len("Command:")
+        output_marker = content.find("Output:", cmd_start)
+        if output_marker == -1:
+            return False, "", ""
+
+        command = content[cmd_start:output_marker].strip()
+        output = content[output_marker + len("Output:") :].strip()
+
+        # Clean up output - stop at next section marker if present
+        for marker in ["<", "\n\n"]:
+            if marker in output:
+                output = output.split(marker)[0].strip()
+
+        return True, command, output
+    except Exception:
+        return False, "", ""
+
+
+def extract_filepaths_from_command(command: str, output: str) -> str:
+    """Extract file paths from a command locally without API call.
+
+    Determines if the command reads file contents and extracts paths accordingly.
+    Commands like ls/dir/find just list files, so return empty.
+    Commands like cat/head/tail actually read contents, so extract the file path.
+
+    Args:
+        command: The shell command that was executed
+        output: The command's output
+
+    Returns:
+        Filepath extraction result in <filepaths> format
+    """
+    import shlex
+
+    # Commands that just list files (don't read contents)
+    listing_commands = {"ls", "dir", "find", "tree", "pwd", "cd", "mkdir", "rmdir", "rm"}
+
+    # Commands that read file contents
+    reading_commands = {"cat", "head", "tail", "less", "more", "bat", "type"}
+
+    try:
+        parts = shlex.split(command)
+        if not parts:
+            return "<filepaths>\n</filepaths>"
+
+        # Get base command (handle paths like /bin/cat)
+        base_cmd = parts[0].split("/")[-1].split("\\")[-1].lower()
+
+        # Listing commands - return empty
+        if base_cmd in listing_commands:
+            return "<filepaths>\n</filepaths>"
+
+        # Reading commands - extract file arguments
+        if base_cmd in reading_commands:
+            filepaths = []
+            for part in parts[1:]:
+                # Skip flags
+                if part.startswith("-"):
+                    continue
+                # This is likely a file path
+                filepaths.append(part)
+
+            if filepaths:
+                paths_str = "\n".join(filepaths)
+                return f"<filepaths>\n{paths_str}\n</filepaths>"
+            return "<filepaths>\n</filepaths>"
+
+        # Other commands - return empty (unknown)
+        return "<filepaths>\n</filepaths>"
+
+    except Exception:
+        return "<filepaths>\n</filepaths>"
