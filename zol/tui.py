@@ -1,8 +1,9 @@
 """Terminal UI utilities for cc-zol."""
 
 import json
-import os
 import sys
+import tty
+import termios
 from pathlib import Path
 from typing import Optional
 
@@ -10,16 +11,7 @@ from .config import DEFAULT_MODEL
 
 
 def prompt(message: str, hide_input: bool = False) -> str:
-    """
-    Prompt for user input.
-
-    Args:
-        message: The prompt message to display
-        hide_input: If True, don't echo input (for passwords)
-
-    Returns:
-        The user's input, stripped of whitespace
-    """
+    """Prompt for user input."""
     if hide_input:
         import getpass
         return getpass.getpass(message).strip()
@@ -60,7 +52,6 @@ def print_info(message: str) -> None:
 
 def load_available_models() -> list[dict]:
     """Load available models from models.json."""
-    # Look for models.json in the package directory
     package_dir = Path(__file__).parent.parent
     models_file = package_dir / "models.json"
 
@@ -89,9 +80,208 @@ def get_popular_models() -> list[str]:
     ]
 
 
+def getch():
+    """Read a single character from stdin without echo."""
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+        # Handle escape sequences (arrow keys)
+        if ch == '\x1b':
+            ch2 = sys.stdin.read(1)
+            ch3 = sys.stdin.read(1)
+            if ch2 == '[':
+                if ch3 == 'A':
+                    return 'UP'
+                elif ch3 == 'B':
+                    return 'DOWN'
+                elif ch3 == 'C':
+                    return 'RIGHT'
+                elif ch3 == 'D':
+                    return 'LEFT'
+            return 'ESC'
+        return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def fuzzy_match(query: str, text: str) -> bool:
+    """Simple fuzzy matching - all query chars must appear in order."""
+    query = query.lower()
+    text = text.lower()
+
+    # Simple contains match
+    if query in text:
+        return True
+
+    # Fuzzy match - chars in order
+    qi = 0
+    for char in text:
+        if qi < len(query) and char == query[qi]:
+            qi += 1
+    return qi == len(query)
+
+
+def fuzzy_score(query: str, text: str) -> int:
+    """Score for sorting fuzzy matches. Lower is better."""
+    query = query.lower()
+    text = text.lower()
+
+    # Exact match
+    if query == text:
+        return 0
+
+    # Starts with
+    if text.startswith(query):
+        return 1
+
+    # Contains
+    if query in text:
+        return 2 + text.index(query)
+
+    # Fuzzy
+    return 100
+
+
+def interactive_select(
+    items: list[str],
+    title: str = "Select an option",
+    default: Optional[str] = None,
+    current: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Interactive selection with arrow keys and fuzzy search.
+
+    Controls:
+    - ↑/↓: Navigate
+    - Type: Filter (fuzzy search)
+    - Enter: Select
+    - Esc/Ctrl+C: Cancel
+    - Backspace: Clear filter
+    """
+    if not items:
+        return default
+
+    query = ""
+    selected_idx = 0
+    visible_count = 15  # Max items to show
+
+    # Find default/current in list
+    if current and current in items:
+        selected_idx = items.index(current)
+    elif default and default in items:
+        selected_idx = items.index(default)
+
+    def get_filtered_items():
+        if not query:
+            return items
+        filtered = [i for i in items if fuzzy_match(query, i)]
+        # Sort by match quality
+        filtered.sort(key=lambda x: fuzzy_score(query, x))
+        return filtered
+
+    def render():
+        # Clear screen and move cursor to top
+        sys.stdout.write('\033[2J\033[H')
+
+        filtered = get_filtered_items()
+
+        # Title
+        print(f"\033[1m{title}\033[0m")
+        print("─" * 50)
+
+        # Search box
+        if query:
+            print(f"🔍 Search: {query}_")
+        else:
+            print("🔍 Type to search...")
+        print()
+
+        # Instructions
+        print("\033[90m↑/↓ Navigate  Enter Select  Esc Cancel  Type to filter\033[0m")
+        print()
+
+        if not filtered:
+            print("\033[33mNo matches found\033[0m")
+            return filtered
+
+        # Calculate visible window
+        total = len(filtered)
+        start = max(0, min(selected_idx - visible_count // 2, total - visible_count))
+        end = min(start + visible_count, total)
+
+        # Show scroll indicator if needed
+        if start > 0:
+            print(f"  \033[90m↑ {start} more above\033[0m")
+
+        # Show items
+        for i in range(start, end):
+            item = filtered[i]
+            prefix = "→ " if i == selected_idx else "  "
+
+            # Highlight selected
+            if i == selected_idx:
+                line = f"\033[7m{prefix}{item}\033[0m"
+            else:
+                line = f"{prefix}{item}"
+
+            # Mark default/current
+            markers = []
+            if item == default:
+                markers.append("\033[32m(default)\033[0m")
+            if item == current:
+                markers.append("\033[36m(current)\033[0m")
+
+            if markers:
+                line += " " + " ".join(markers)
+
+            print(line)
+
+        # Show scroll indicator if needed
+        if end < total:
+            print(f"  \033[90m↓ {total - end} more below\033[0m")
+
+        print()
+        print(f"\033[90m{len(filtered)}/{len(items)} models\033[0m")
+
+        return filtered
+
+    try:
+        while True:
+            filtered = render()
+
+            ch = getch()
+
+            if ch == 'UP':
+                if filtered:
+                    selected_idx = max(0, selected_idx - 1)
+            elif ch == 'DOWN':
+                if filtered:
+                    selected_idx = min(len(filtered) - 1, selected_idx + 1)
+            elif ch == '\r' or ch == '\n':  # Enter
+                if filtered and 0 <= selected_idx < len(filtered):
+                    # Clear screen before returning
+                    sys.stdout.write('\033[2J\033[H')
+                    return filtered[selected_idx]
+            elif ch == 'ESC' or ch == '\x03':  # Esc or Ctrl+C
+                sys.stdout.write('\033[2J\033[H')
+                return None
+            elif ch == '\x7f' or ch == '\x08':  # Backspace
+                query = query[:-1]
+                selected_idx = 0
+            elif ch.isprintable():
+                query += ch
+                selected_idx = 0
+
+    except KeyboardInterrupt:
+        sys.stdout.write('\033[2J\033[H')
+        return None
+
+
 def select_model(current_model: Optional[str] = None) -> str:
     """
-    Interactive model selection.
+    Interactive model selection with fuzzy search.
     Returns the selected model ID.
     """
     all_models = load_available_models()
@@ -106,83 +296,24 @@ def select_model(current_model: Optional[str] = None) -> str:
     # Get remaining models sorted alphabetically
     other_models = sorted([m for m in model_ids if m not in available_popular])
 
-    print("\n" + "=" * 60)
-    print("SELECT A MODEL")
-    print("=" * 60)
+    # Combine: popular first, then others
+    all_sorted = available_popular + other_models
 
-    if current_model:
-        print(f"\nCurrent model: {current_model}")
+    if not all_sorted:
+        # Fallback if no models.json
+        print_info(f"No models found. Using default: {DEFAULT_MODEL}")
+        return DEFAULT_MODEL
 
-    print(f"\nDefault: {DEFAULT_MODEL}")
-    print("\n--- Popular Models ---\n")
+    selected = interactive_select(
+        items=all_sorted,
+        title="SELECT A MODEL",
+        default=DEFAULT_MODEL,
+        current=current_model,
+    )
 
-    # Display popular models
-    for i, model in enumerate(available_popular, 1):
-        marker = " (default)" if model == DEFAULT_MODEL else ""
-        current = " *" if model == current_model else ""
-        print(f"  {i:2}. {model}{marker}{current}")
-
-    print("\n--- Other Models ---\n")
-    print("  Type a number, model name, or press Enter for default")
-    print(f"  ({len(other_models)} more models available)")
-    print()
-
-    # Show a few other models as examples
-    for i, model in enumerate(other_models[:5], len(available_popular) + 1):
-        print(f"  {i:2}. {model}")
-    if len(other_models) > 5:
-        print(f"  ... and {len(other_models) - 5} more")
-
-    print()
-    print("  0. Show all models")
-    print()
-
-    while True:
-        choice = prompt("Select model [Enter for default]: ").strip()
-
-        # Default selection
-        if not choice:
-            print(f"\nSelected: {DEFAULT_MODEL}")
-            return DEFAULT_MODEL
-
-        # Show all models
-        if choice == "0":
-            print("\n--- All Available Models ---\n")
-            all_sorted = available_popular + other_models
-            for i, model in enumerate(all_sorted, 1):
-                marker = " (default)" if model == DEFAULT_MODEL else ""
-                current = " *" if model == current_model else ""
-                print(f"  {i:3}. {model}{marker}{current}")
-            print()
-            continue
-
-        # Numeric selection
-        if choice.isdigit():
-            idx = int(choice) - 1
-            all_sorted = available_popular + other_models
-            if 0 <= idx < len(all_sorted):
-                selected = all_sorted[idx]
-                print(f"\nSelected: {selected}")
-                return selected
-            print("Invalid number. Try again.")
-            continue
-
-        # Direct model name input
-        if choice in model_ids:
-            print(f"\nSelected: {choice}")
-            return choice
-
-        # Fuzzy search
-        matches = [m for m in model_ids if choice.lower() in m.lower()]
-        if len(matches) == 1:
-            print(f"\nSelected: {matches[0]}")
-            return matches[0]
-        elif len(matches) > 1:
-            print(f"\nMultiple matches found:")
-            for i, m in enumerate(matches[:10], 1):
-                print(f"  {i}. {m}")
-            if len(matches) > 10:
-                print(f"  ... and {len(matches) - 10} more")
-            continue
-
-        print("Model not found. Try again or press Enter for default.")
+    if selected:
+        print_success(f"Selected: {selected}")
+        return selected
+    else:
+        print_info(f"Cancelled. Using default: {DEFAULT_MODEL}")
+        return current_model or DEFAULT_MODEL
