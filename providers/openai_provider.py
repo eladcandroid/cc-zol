@@ -4,6 +4,7 @@ import json
 import uuid
 from typing import Any, AsyncIterator
 
+import httpx
 from openai import AsyncOpenAI
 
 from .base import BaseProvider, ProviderConfig
@@ -45,11 +46,21 @@ class OpenAIProvider(
         ).rstrip("/")
         self._provider_params = self._load_provider_params()
         self._global_rate_limiter = GlobalRateLimiter.get_instance()
+
+        # Configure httpx client with connection pooling for better performance
+        http_client = httpx.AsyncClient(
+            limits=httpx.Limits(
+                max_connections=100,
+                max_keepalive_connections=20,
+                keepalive_expiry=30.0,
+            ),
+            timeout=httpx.Timeout(300.0, connect=30.0),
+        )
         self._client = AsyncOpenAI(
             api_key=self._api_key,
             base_url=self._base_url,
             max_retries=2,
-            timeout=300.0,
+            http_client=http_client,
         )
 
     async def stream_response(

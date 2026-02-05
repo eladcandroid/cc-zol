@@ -6,9 +6,11 @@ Authentication is handled by the remote auth server during login.
 
 import os
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from .routes import router
 from .dependencies import cleanup_provider
@@ -23,13 +25,26 @@ LOG_FILE = "server.log"
 if not logging.root.handlers:
     # Fresh start - clear log file and configure
     open(LOG_FILE, "w", encoding="utf-8").close()
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=getattr(logging, log_level, logging.INFO),
         format="%(asctime)s - %(levelname)s - %(message)s",
         handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8", mode="a")],
     )
 
 logger = logging.getLogger(__name__)
+
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Middleware to add request ID for log correlation."""
+
+    async def dispatch(self, request: Request, call_next):
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())[:8]
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
 
 # Suppress noisy uvicorn logs
 logging.getLogger("uvicorn").setLevel(logging.WARNING)
@@ -146,6 +161,9 @@ def create_app() -> FastAPI:
         version="2.0.0",
         lifespan=lifespan,
     )
+
+    # Add request ID middleware for log correlation
+    app.add_middleware(RequestIDMiddleware)
 
     # Register routes (proxy only, no auth routes)
     app.include_router(router)

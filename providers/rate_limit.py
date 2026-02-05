@@ -27,7 +27,7 @@ class GlobalRateLimiter:
         if hasattr(self, "_initialized"):
             return
 
-        rate_limit = int(os.getenv("PROVIDER_RATE_LIMIT", "40"))
+        rate_limit = int(os.getenv("PROVIDER_RATE_LIMIT", "100"))
         rate_window = float(os.getenv("PROVIDER_RATE_WINDOW", "60.0"))
 
         self.limiter = AsyncLimiter(rate_limit, rate_window)
