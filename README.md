@@ -5,20 +5,27 @@ Use **Claude Code CLI** with any OpenAI-compatible API via email verification.
 ## How It Works
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  Your Machine                                            │
-│                                                          │
-│  cc-zol ──► Login (email) ──► Auth Server ──► MongoDB    │
-│    │                              │                      │
-│    │                         (hosted by admin)           │
-│    │                                                     │
-│    └──► Local Proxy ──► Claude Code                      │
-│              │                                           │
-└──────────────┼───────────────────────────────────────────┘
-               │
-               ▼
-        Provider API (OpenAI-compatible)
+┌─────────────────────────────────────────────────────────────────┐
+│  User's Machine                                                 │
+│                                                                 │
+│  cc-zol CLI                                                     │
+│      │                                                          │
+│      ├──► Login (email/code) ────────► Auth Server ◄── MongoDB  │
+│      │                                      │                   │
+│      ├──► Fetch config (with token) ────────┘                   │
+│      │         │                                                │
+│      │         │ Returns: api_key, base_url, model              │
+│      │         │ (passed in memory, never saved to disk)        │
+│      │         ▼                                                │
+│      └──► Local Proxy (with config) ──► Claude Code             │
+│                 │                                               │
+└─────────────────┼───────────────────────────────────────────────┘
+                  │
+                  ▼
+           Provider API (OpenAI-compatible)
 ```
+
+**Key security feature:** Users never see the provider API key. It's fetched from your auth server and passed in memory only.
 
 ---
 
@@ -42,8 +49,7 @@ On first run:
 1. Enter your email
 2. Check email for verification code
 3. Enter code
-4. Select a model
-5. Claude Code starts automatically
+4. Claude Code starts automatically
 
 ### Commands
 
@@ -104,7 +110,7 @@ SMTP_USER=your@gmail.com
 SMTP_PASSWORD=your-app-password
 SMTP_FROM_EMAIL=your@gmail.com
 
-# Required: Your OpenAI-compatible provider
+# Required: Your OpenAI-compatible provider (users never see this)
 PROVIDER_API_KEY=your-api-key
 PROVIDER_BASE_URL=https://api.openai.com/v1
 MODEL=gpt-4o
@@ -142,13 +148,53 @@ Then commit and push. Users installing from your repo will connect to your serve
 
 Access at `http://your-server:8083/admin` with your `ADMIN_PASSWORD`.
 
+Features:
+- View all users and their status
+- **Add pre-configured users** with custom tokens (inactive by default)
+- Edit user tokens
+- Enable/disable users
+- Delete users
+
+---
+
+## Security Model
+
+### What Users See
+
+Users only have access to:
+```
+~/.cc-zol/config.json
+{
+  "email": "user@example.com",
+  "token": "abc123..."    ← Auth token only (not the API key)
+}
+```
+
+### What Users Never See
+
+- `PROVIDER_API_KEY` - Your OpenAI/NVIDIA/etc API key
+- `PROVIDER_BASE_URL` - The actual API endpoint
+- Any provider credentials
+
+### How It Works
+
+1. User logs in with email → gets auth token
+2. On each `cc-zol` start, CLI fetches provider config from auth server
+3. Config is passed to local proxy via environment variables (in memory)
+4. **Nothing is written to disk** - config is fetched fresh each session
+
+This means:
+- You control the API key centrally
+- Revoking a user = they can't fetch config anymore
+- No risk of users sharing/leaking your API key
+
 ---
 
 ## Configuration
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `PROVIDER_API_KEY` | Your API key | required |
+| `PROVIDER_API_KEY` | Your API key (users never see this) | required |
 | `PROVIDER_BASE_URL` | API endpoint URL | `https://api.openai.com/v1` |
 | `MODEL` | Model for all requests | `gpt-4o` |
 | `MONGODB_URI` | MongoDB connection | `mongodb://localhost:27017` |
