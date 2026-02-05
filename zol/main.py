@@ -233,15 +233,68 @@ def model():
         print_info(f"Model unchanged: {new_model}")
 
 
+def get_latest_commit_sha() -> Optional[str]:
+    """Fetch the latest commit SHA from GitHub."""
+    try:
+        response = run_async(_fetch_latest_commit())
+        return response
+    except Exception:
+        return None
+
+
+async def _fetch_latest_commit() -> Optional[str]:
+    """Async fetch latest commit SHA from GitHub API."""
+    async with httpx.AsyncClient() as client:
+        try:
+            from .config import GITHUB_REPO
+            response = await client.get(
+                f"https://api.github.com/repos/{GITHUB_REPO}/commits/main",
+                headers={"Accept": "application/vnd.github.v3+json"},
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                return response.json().get("sha")
+        except Exception:
+            pass
+    return None
+
+
+def format_update_time(iso_time: str) -> str:
+    """Format ISO timestamp to human-readable string."""
+    from datetime import datetime
+    try:
+        dt = datetime.fromisoformat(iso_time)
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return iso_time
+
+
 @cli.command()
 def update():
     """Update cc-zol to the latest version."""
     import subprocess
+    from .config import GITHUB_REPO
+
+    config = LocalConfig.load()
+    last_commit, last_time = config.get_update_info()
+
+    # Show last update time if available
+    if last_time:
+        print_info(f"Last updated: {format_update_time(last_time)}")
+
+    # Fetch latest commit from GitHub
+    print_info("Checking for updates...")
+    latest_commit = get_latest_commit_sha()
+
+    if latest_commit and last_commit:
+        if latest_commit == last_commit:
+            print_success("Already up to date!")
+            return
 
     print_info("Updating cc-zol...")
 
     # Use uv tool install with --force to update
-    repo_url = "git+https://github.com/eladcandroid/cc-zol.git"
+    repo_url = f"git+https://github.com/{GITHUB_REPO}.git"
 
     try:
         result = subprocess.run(
@@ -251,6 +304,9 @@ def update():
         )
 
         if result.returncode == 0:
+            # Save the new commit SHA and timestamp
+            if latest_commit:
+                config.save_update_info(latest_commit)
             print_success("cc-zol updated successfully!")
             print_info("Restart your terminal or run 'cc-zol' to use the new version.")
         else:
@@ -272,6 +328,8 @@ def update():
                         text=True,
                     )
                     if result.returncode == 0:
+                        if latest_commit:
+                            config.save_update_info(latest_commit)
                         print_success("cc-zol updated successfully!")
                         return
             print_error(f"Update failed: {result.stderr or result.stdout}")

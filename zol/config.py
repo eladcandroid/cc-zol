@@ -2,12 +2,14 @@
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass
 
 
 DEFAULT_MODEL = "moonshotai/kimi-k2.5"
+GITHUB_REPO = "eladcandroid/cc-zol"
 
 # Remote auth server URL (for email verification & token retrieval)
 # Users login against this server, then run local proxy
@@ -123,3 +125,27 @@ class LocalConfig:
         """Clear saved server port."""
         if self.SERVER_PORT_FILE.exists():
             self.SERVER_PORT_FILE.unlink()
+
+    def save_update_info(self, commit_sha: str) -> None:
+        """Save update info (commit SHA and timestamp)."""
+        self.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        data = {}
+        if self.CONFIG_FILE.exists():
+            try:
+                data = json.loads(self.CONFIG_FILE.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+        data["last_update_commit"] = commit_sha
+        data["last_update_time"] = datetime.now().isoformat()
+        self.CONFIG_FILE.write_text(json.dumps(data))
+        os.chmod(self.CONFIG_FILE, 0o600)
+
+    def get_update_info(self) -> tuple[Optional[str], Optional[str]]:
+        """Get last update info (commit_sha, timestamp)."""
+        if self.CONFIG_FILE.exists():
+            try:
+                data = json.loads(self.CONFIG_FILE.read_text())
+                return data.get("last_update_commit"), data.get("last_update_time")
+            except (json.JSONDecodeError, OSError):
+                pass
+        return None, None
