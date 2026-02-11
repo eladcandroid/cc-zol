@@ -36,22 +36,23 @@ class RequestBuilderMixin:
         self._provider_params: Dict[str, Any] = {}
 
     def _load_provider_params(self) -> Dict[str, Any]:
-        """Load provider-specific parameters from environment.
+        """Load provider-specific parameters from settings.
 
-        Reads PROVIDER_* environment variables to configure defaults.
+        Uses the centralized Settings object which reads from environment
+        variables with sensible defaults.
 
         Returns:
             Dictionary of provider-specific parameters
         """
-        import os
+        from config.settings import get_settings
 
+        settings = get_settings()
         params: Dict[str, Any] = {}
-        if val := os.getenv("PROVIDER_TEMPERATURE"):
-            params["temperature"] = float(val)
-        if val := os.getenv("PROVIDER_TOP_P"):
-            params["top_p"] = float(val)
-        if val := os.getenv("PROVIDER_MAX_TOKENS"):
-            params["max_tokens"] = int(val)
+        if settings.provider_temperature != 1.0:
+            params["temperature"] = settings.provider_temperature
+        if settings.provider_top_p != 1.0:
+            params["top_p"] = settings.provider_top_p
+        params["max_tokens"] = settings.provider_max_tokens
         return params
 
     def _build_request_body(self, request_data: Any, stream: bool = False) -> dict:
