@@ -87,16 +87,25 @@ async def fetch_provider_config(server_url: str, token: str) -> Optional[dict]:
             return None
 
 
-def start_claude(token: str, port: int, model: str) -> None:
-    """Start Claude Code with the proxy environment variables."""
+def start_claude(token: str, port: int, model: str, extra_args: list = None) -> None:
+    """Start Claude Code with the proxy environment variables.
+
+    Args:
+        token: Auth token for the proxy
+        port: Local proxy port
+        model: Model name
+        extra_args: Additional CLI arguments to pass through to claude
+    """
     env = os.environ.copy()
     env["ANTHROPIC_AUTH_TOKEN"] = token
     env["ANTHROPIC_BASE_URL"] = f"http://localhost:{port}"
     env["MODEL"] = model
 
+    args = ["claude"] + (extra_args or [])
+
     # Replace current process with claude
     try:
-        os.execvpe("claude", ["claude"], env)
+        os.execvpe("claude", args, env)
     except FileNotFoundError:
         print_error("Claude Code CLI not found. Please install it first.")
         print_info("Visit: https://docs.anthropic.com/claude-code")
@@ -135,13 +144,24 @@ def do_login(config: LocalConfig, with_model_selection: bool = True) -> Optional
     return token
 
 
-@click.group(invoke_without_command=True)
+@click.group(
+    invoke_without_command=True,
+    context_settings=dict(
+        ignore_unknown_options=True,
+        allow_extra_args=True,
+    ),
+)
 @click.pass_context
 def cli(ctx):
-    """cc-zol - Claude Code with email verification"""
+    """cc-zol - Claude Code with email verification
+
+    Any arguments not recognized as cc-zol subcommands are passed
+    through to Claude Code (e.g. cc-zol -p "explain this code").
+    """
     if ctx.invoked_subcommand is None:
         # Default behavior: login if needed, then start Claude
-        main_flow()
+        # Pass any extra args through to claude
+        main_flow(ctx.args)
 
 
 @cli.command()
@@ -447,8 +467,12 @@ def update():
         print_info("  curl -LsSf https://astral.sh/uv/install.sh | sh")
 
 
-def main_flow():
-    """Main flow: login if needed, then start Claude."""
+def main_flow(extra_args: list = None):
+    """Main flow: login if needed, then start Claude.
+
+    Args:
+        extra_args: Additional CLI arguments to pass through to claude
+    """
     config = LocalConfig.load()
     server_manager = ServerManager()
 
@@ -483,7 +507,7 @@ def main_flow():
     print_info(f"Welcome back, {config.email}")
     print_info(f"Model: {model}")
     print_info("Starting Claude...")
-    start_claude(config.token, port, model)
+    start_claude(config.token, port, model, extra_args)
 
 
 if __name__ == "__main__":
