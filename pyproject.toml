@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.scripts]
-cc-zol = "zol.main:cli"
+cc-zol = "zol.main:entry"
 
 [tool.uv]
 package = true

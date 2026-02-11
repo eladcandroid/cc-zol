@@ -144,24 +144,30 @@ def do_login(config: LocalConfig, with_model_selection: bool = True) -> Optional
     return token
 
 
-@click.group(
-    invoke_without_command=True,
-    context_settings=dict(
-        ignore_unknown_options=True,
-        allow_extra_args=True,
-    ),
-)
+@click.group(invoke_without_command=True)
 @click.pass_context
 def cli(ctx):
-    """cc-zol - Claude Code with email verification
-
-    Any arguments not recognized as cc-zol subcommands are passed
-    through to Claude Code (e.g. cc-zol -p "explain this code").
-    """
+    """cc-zol - Claude Code with email verification"""
     if ctx.invoked_subcommand is None:
-        # Default behavior: login if needed, then start Claude
-        # Pass any extra args through to claude
-        main_flow(ctx.args)
+        main_flow()
+
+
+# Known cc-zol subcommand names (kept in sync with @cli.command definitions below)
+_SUBCOMMANDS = {"login", "logout", "status", "stop", "model", "test", "update"}
+
+
+def entry():
+    """Entry point that passes unknown args through to Claude Code.
+
+    If the first argument is a known cc-zol subcommand or --help,
+    delegate to Click. Otherwise treat all args as Claude Code flags
+    and pass them through (e.g. cc-zol -p "explain this code").
+    """
+    args = sys.argv[1:]
+    if not args or args[0] in _SUBCOMMANDS or args[0] in ("--help", "-h"):
+        cli()
+    else:
+        main_flow(args)
 
 
 @cli.command()
@@ -511,4 +517,4 @@ def main_flow(extra_args: list = None):
 
 
 if __name__ == "__main__":
-    cli()
+    entry()
