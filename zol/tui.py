@@ -73,11 +73,17 @@ def get_popular_models() -> list[str]:
         "moonshotai/kimi-k2-thinking",
         "deepseek-ai/deepseek-v3.2",
         "deepseek-ai/deepseek-v3.1",
-        "qwen/qwq-32b",
+        "qwen/qwen3-coder-480b-a35b-instruct",
         "qwen/qwen3-235b-a22b",
+        "qwen/qwq-32b",
+        "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+        "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        "meta/llama-4-maverick-17b-128e-instruct",
         "mistralai/mistral-large-3-675b-instruct-2512",
-        "meta/llama-3.3-70b-instruct",
+        "mistralai/devstral-2-123b-instruct-2512",
+        "openai/gpt-oss-120b",
         "google/gemma-3-27b-it",
+        "meta/llama-3.3-70b-instruct",
     ]
 
 
