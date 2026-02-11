@@ -54,7 +54,7 @@ class OpenAIProvider(
                 max_keepalive_connections=20,
                 keepalive_expiry=30.0,
             ),
-            timeout=httpx.Timeout(300.0, connect=30.0),
+            timeout=httpx.Timeout(None, connect=30.0),
         )
         self._client = AsyncOpenAI(
             api_key=self._api_key,
@@ -113,6 +113,11 @@ class OpenAIProvider(
                 if choice.finish_reason:
                     finish_reason = choice.finish_reason
                     logger.debug(f"PROVIDER finish_reason: {finish_reason}")
+                    if finish_reason == "length":
+                        logger.warning(
+                            f"PROVIDER_TRUNCATED: Response truncated (finish_reason=length). "
+                            f"max_tokens={body.get('max_tokens')} may be too low for thinking models."
+                        )
 
                 # Handle reasoning content from delta
                 reasoning = getattr(delta, "reasoning_content", None)
@@ -179,6 +184,31 @@ class OpenAIProvider(
             error_occurred = True
             error_message = str(mapped_e)
             logger.info(f"PROVIDER_STREAM: Emitting SSE error event for {type(e).__name__}")
+
+            # Flush parser buffers so any buffered content is not lost
+            remaining = think_parser.flush()
+            if remaining:
+                if remaining.type == ContentType.THINKING:
+                    for event in sse.ensure_thinking_block():
+                        yield event
+                    yield sse.emit_thinking_delta(remaining.content)
+                else:
+                    for event in sse.ensure_text_block():
+                        yield event
+                    yield sse.emit_text_delta(remaining.content)
+
+            for tool_use in heuristic_parser.flush():
+                for event in sse.close_content_blocks():
+                    yield event
+                block_idx = sse.blocks.allocate_index()
+                yield sse.content_block_start(
+                    block_idx, "tool_use", id=tool_use["id"], name=tool_use["name"]
+                )
+                yield sse.content_block_delta(
+                    block_idx, "input_json_delta", json.dumps(tool_use["input"])
+                )
+                yield sse.content_block_stop(block_idx)
+
             # Ensure open blocks are closed before emitting error to follow Anthropic protocol
             for event in sse.close_content_blocks():
                 yield event

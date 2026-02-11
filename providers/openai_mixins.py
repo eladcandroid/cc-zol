@@ -74,10 +74,19 @@ class RequestBuilderMixin:
             if system_msg:
                 messages.insert(0, system_msg)
 
+        # Use provider max_tokens as a floor so thinking tokens don't eat the budget
+        max_tokens = request_data.max_tokens
+        provider_max = self._provider_params.get("max_tokens")
+        if provider_max and provider_max > max_tokens:
+            logger.info(
+                f"REQUEST_BUILD: Raising max_tokens from {max_tokens} to {provider_max} (PROVIDER_MAX_TOKENS)"
+            )
+            max_tokens = provider_max
+
         body = {
             "model": request_data.model,
             "messages": messages,
-            "max_tokens": request_data.max_tokens,
+            "max_tokens": max_tokens,
         }
 
         if request_data.temperature is not None:
@@ -104,8 +113,10 @@ class RequestBuilderMixin:
         if extra_params:
             body["extra_body"] = extra_params
 
-        # Apply provider defaults
+        # Apply provider defaults (max_tokens already handled above)
         for key, val in self._provider_params.items():
+            if key == "max_tokens":
+                continue
             if key not in body and key not in extra_params:
                 body[key] = val
 
