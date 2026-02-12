@@ -82,7 +82,7 @@ class OpenAIProvider(
 
         body = self._build_request_body(request, stream=True)
         logger.info(
-            f"PROVIDER_STREAM: model={body.get('model')} msgs={len(body.get('messages', []))} tools={len(body.get('tools', []))}"
+            f"PROVIDER_STREAM: model={body.get('model')} max_tokens={body.get('max_tokens')} msgs={len(body.get('messages', []))} tools={len(body.get('tools', []))}"
         )
 
         # Only emit message_start if we haven't already emitted it during reactive wait
@@ -112,12 +112,13 @@ class OpenAIProvider(
 
                 if choice.finish_reason:
                     finish_reason = choice.finish_reason
-                    logger.debug(f"PROVIDER finish_reason: {finish_reason}")
                     if finish_reason == "length":
                         logger.warning(
                             f"PROVIDER_TRUNCATED: Response truncated (finish_reason=length). "
-                            f"max_tokens={body.get('max_tokens')} may be too low for thinking models."
+                            f"max_tokens={body.get('max_tokens')} may be too low."
                         )
+                    else:
+                        logger.info(f"PROVIDER_FINISH: finish_reason={finish_reason}")
 
                 # Handle reasoning content from delta
                 reasoning = getattr(delta, "reasoning_content", None)
@@ -261,6 +262,11 @@ class OpenAIProvider(
             usage_info.completion_tokens
             if usage_info and hasattr(usage_info, "completion_tokens")
             else sse.estimate_output_tokens()
+        )
+        logger.info(
+            f"PROVIDER_DONE: finish_reason={finish_reason} output_tokens={output_tokens} "
+            f"text_len={len(sse.accumulated_text)} thinking_len={len(sse.accumulated_reasoning)} "
+            f"tools={len(sse.blocks.tool_indices)} error={error_occurred}"
         )
         yield sse.message_delta(map_stop_reason(finish_reason), output_tokens)
         yield sse.message_stop()

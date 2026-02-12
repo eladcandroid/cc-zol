@@ -18,7 +18,7 @@ from providers.exceptions import ProviderError
 from config.settings import get_settings
 
 # Configure logging (atomic - only on true fresh start)
-LOG_FILE = "server.log"
+LOG_FILE = os.path.join(os.path.expanduser("~/.cc-zol"), "server.log")
 
 # Check if logging is already configured (e.g., hot reload)
 # If handlers exist, skip setup to avoid clearing logs mid-session
