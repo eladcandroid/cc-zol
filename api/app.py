@@ -17,20 +17,19 @@ from .dependencies import cleanup_provider
 from providers.exceptions import ProviderError
 from config.settings import get_settings
 
-# Configure logging (atomic - only on true fresh start)
+# Configure logging - always add our file handler
 LOG_FILE = os.path.join(os.path.expanduser("~/.cc-zol"), "server.log")
+os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
-# Check if logging is already configured (e.g., hot reload)
-# If handlers exist, skip setup to avoid clearing logs mid-session
-if not logging.root.handlers:
-    # Fresh start - clear log file and configure
-    open(LOG_FILE, "w", encoding="utf-8").close()
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-    logging.basicConfig(
-        level=getattr(logging, log_level, logging.INFO),
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8", mode="a")],
-    )
+# Truncate log on fresh start, then open in append mode
+open(LOG_FILE, "w", encoding="utf-8").close()
+log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+
+_file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8", mode="a")
+_file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+_file_handler.setLevel(getattr(logging, log_level, logging.INFO))
+logging.root.addHandler(_file_handler)
+logging.root.setLevel(min(logging.root.level, getattr(logging, log_level, logging.INFO)))
 
 logger = logging.getLogger(__name__)
 
