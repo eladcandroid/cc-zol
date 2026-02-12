@@ -101,7 +101,7 @@ def start_claude(token: str, port: int, model: str, extra_args: list = None) -> 
     env["ANTHROPIC_BASE_URL"] = f"http://localhost:{port}"
     env["MODEL"] = model
 
-    args = ["claude"] + (extra_args or [])
+    args = ["claude", f"--model={model}"] + (extra_args or [])
 
     # Replace current process with claude
     try:
