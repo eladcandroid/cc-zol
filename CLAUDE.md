@@ -94,15 +94,15 @@ cc-zol update       # Update to the latest version
 ### Run Auth Server (for hosting)
 ```bash
 # With PM2 (recommended)
-pm2 start "uv run uvicorn auth_server:app --host 0.0.0.0 --port 8083" --name cc-zol-auth
+pm2 start "uv run python -m uvicorn auth_server:app --host 0.0.0.0 --port 8083" --name cc-zol-auth
 
 # Or directly
-uv run uvicorn auth_server:app --host 0.0.0.0 --port 8083
+uv run python -m uvicorn auth_server:app --host 0.0.0.0 --port 8083
 ```
 
 ### Run Local Proxy Manually
 ```bash
-uv run uvicorn server:app --host 0.0.0.0 --port 8082
+uv run python -m uvicorn server:app --host 0.0.0.0 --port 8082
 ```
 
 ### Run Tests
