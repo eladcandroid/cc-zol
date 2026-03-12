@@ -2,13 +2,13 @@
 
 from unittest.mock import MagicMock
 
-from api.request_utils import (
+from api.detection import (
     is_quota_check_request,
     is_title_generation_request,
-    extract_command_prefix,
     is_prefix_detection_request,
-    get_token_count,
 )
+from api.command_utils import extract_command_prefix
+from api.request_utils import get_token_count
 from api.models import MessagesRequest, Message
 
 
@@ -108,70 +108,54 @@ class TestQuotaCheckRequest:
 
 
 class TestTitleGenerationRequest:
-    """Tests for is_title_generation_request function."""
+    """Tests for is_title_generation_request function.
+
+    The upstream detection checks the system prompt for 'new conversation topic'
+    and 'title' keywords, with no tools present.
+    """
 
     def test_title_generation_simple(self):
-        """Test title generation detection with target phrase."""
-        msg = MagicMock(spec=Message)
-        msg.role = "user"
-        msg.content = "Please write a 5-10 word title for this conversation"
-
+        """Test title generation detection with system prompt."""
         req = MagicMock(spec=MessagesRequest)
-        req.messages = [msg]
+        req.system = "Generate a title for a new conversation topic"
+        req.tools = None
+        req.messages = [MagicMock(role="user", content="hello")]
 
         assert is_title_generation_request(req) is True
 
     def test_title_generation_case_insensitive(self):
         """Test title generation is case insensitive."""
-        msg = MagicMock(spec=Message)
-        msg.role = "user"
-        msg.content = "Write a 5-10 Word Title please"
-
         req = MagicMock(spec=MessagesRequest)
-        req.messages = [msg]
+        req.system = "NEW CONVERSATION TOPIC - generate a TITLE"
+        req.tools = None
+        req.messages = [MagicMock(role="user", content="hello")]
 
         assert is_title_generation_request(req) is True
 
-    def test_title_generation_list_content(self):
-        """Test title generation with list content blocks."""
-        block = MagicMock()
-        block.text = "Write a 5-10 word title"
-
-        msg = MagicMock(spec=Message)
-        msg.role = "user"
-        msg.content = [block]
-
+    def test_not_title_generation_no_system(self):
+        """Test not title generation without system prompt."""
         req = MagicMock(spec=MessagesRequest)
-        req.messages = [msg]
-
-        assert is_title_generation_request(req) is True
-
-    def test_not_title_generation_no_phrase(self):
-        """Test not title generation without target phrase."""
-        msg = MagicMock(spec=Message)
-        msg.role = "user"
-        msg.content = "Hello world, how are you?"
-
-        req = MagicMock(spec=MessagesRequest)
-        req.messages = [msg]
+        req.system = None
+        req.tools = None
+        req.messages = [MagicMock(role="user", content="hello")]
 
         assert is_title_generation_request(req) is False
 
-    def test_not_title_generation_wrong_role(self):
-        """Test not title generation when last message is not from user."""
-        msg = MagicMock(spec=Message)
-        msg.role = "assistant"
-        msg.content = "Write a 5-10 word title"
-
+    def test_not_title_generation_has_tools(self):
+        """Test not title generation when tools are present."""
         req = MagicMock(spec=MessagesRequest)
-        req.messages = [msg]
+        req.system = "Generate a title for a new conversation topic"
+        req.tools = [MagicMock()]
+        req.messages = [MagicMock(role="user", content="hello")]
 
         assert is_title_generation_request(req) is False
 
-    def test_not_title_generation_empty_messages(self):
-        """Test not title generation when no messages."""
+    def test_not_title_generation_no_keywords(self):
+        """Test not title generation without target keywords."""
         req = MagicMock(spec=MessagesRequest)
-        req.messages = []
+        req.system = "You are a helpful assistant"
+        req.tools = None
+        req.messages = [MagicMock(role="user", content="hello")]
 
         assert is_title_generation_request(req) is False
 

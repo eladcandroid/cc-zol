@@ -1,5 +1,5 @@
 import json
-from providers.utils.message_converter import AnthropicToOpenAIConverter
+from providers.common.message_converter import AnthropicToOpenAIConverter
 
 # --- Mock Classes ---
 
@@ -140,20 +140,12 @@ def test_convert_user_message_mixed_text_and_tool_result():
     messages = [MockMessage("user", content)]
     result = AnthropicToOpenAIConverter.convert_messages(messages)
 
-    # Expected: Tool messages come first? Or order is preserved?
-    # Logic: loop over blocks. if tool_result -> append to result. if text -> append to text_parts.
-    # finally if text_parts -> append new user message.
-    # So tool results come first in the list, then the text message.
-    # Wait, looking at code:
-    # for block in content:
-    #   if tool_result: result.append(...)
-    #   if text: text_parts.append(...)
-    # if text_parts: result.append(...)
-    # Yes, tool results first, then user text.
+    # The converter preserves order: text is flushed before each tool_result,
+    # so user text comes first, then the tool result message.
 
     assert len(result) == 2
-    assert result[0] == {"role": "tool", "tool_call_id": "tool_789", "content": "42"}
-    assert result[1] == {"role": "user", "content": "Here is the result:"}
+    assert result[0] == {"role": "user", "content": "Here is the result:"}
+    assert result[1] == {"role": "tool", "tool_call_id": "tool_789", "content": "42"}
 
 
 # --- Message Conversion Tests: Assistant ---
@@ -265,7 +257,7 @@ def test_convert_mixed_blocks_and_types_and_roles():
 
 def test_get_block_attr_defaults():
     # Test helper directly
-    from providers.utils.message_converter import get_block_attr
+    from providers.common.message_converter import get_block_attr
 
     assert get_block_attr({}, "missing", "default") == "default"
     assert get_block_attr(object(), "missing", "default") == "default"

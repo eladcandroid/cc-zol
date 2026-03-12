@@ -3,20 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 from api.app import app
 from api.dependencies import get_settings
-from auth.middleware import require_auth
-from auth.models import User
 from config.settings import Settings
-
-
-# Mock auth for all tests in this module
-mock_user = User(email="test@example.com", verified=True, intercept_token="test_token")
-
-
-async def override_require_auth():
-    return mock_user
-
-
-app.dependency_overrides[require_auth] = override_require_auth
 
 
 @pytest.fixture
@@ -26,19 +13,19 @@ def client():
 
 @pytest.fixture
 def mock_settings():
-    settings = Settings()
-    settings.fast_prefix_detection = True
-    settings.enable_network_probe_mock = True
-    settings.enable_title_generation_skip = True
-    return settings
+    s = MagicMock(spec=Settings)
+    s.fast_prefix_detection = True
+    s.enable_network_probe_mock = True
+    s.enable_title_generation_skip = True
+    s.enable_suggestion_mode_skip = True
+    s.enable_filepath_extraction_mock = True
+    s.model = "test-model"
+    s.provider_type = "generic"
+    return s
 
 
 def test_create_message_fast_prefix_detection(client, mock_settings):
-    # Save auth override before clearing
-    auth_override = app.dependency_overrides.get(require_auth)
     app.dependency_overrides[get_settings] = lambda: mock_settings
-    if auth_override:
-        app.dependency_overrides[require_auth] = auth_override
 
     payload = {
         "model": "claude-3-sonnet",
@@ -46,21 +33,21 @@ def test_create_message_fast_prefix_detection(client, mock_settings):
         "messages": [{"role": "user", "content": "What is the prefix?"}],
     }
 
-    with patch("api.routes.is_prefix_detection_request", return_value=(True, "/ask")):
+    with patch(
+        "api.optimization_handlers.is_prefix_detection_request",
+        return_value=(True, "/ask"),
+    ):
         response = client.post("/v1/messages", json=payload)
 
     assert response.status_code == 200
     data = response.json()
     assert "/ask" in data["content"][0]["text"]
 
-    # Restore only auth override
     app.dependency_overrides.clear()
-    app.dependency_overrides[require_auth] = override_require_auth
 
 
 def test_create_message_quota_check_mock(client, mock_settings):
     app.dependency_overrides[get_settings] = lambda: mock_settings
-    app.dependency_overrides[require_auth] = override_require_auth
 
     payload = {
         "model": "claude-3-sonnet",
@@ -68,19 +55,19 @@ def test_create_message_quota_check_mock(client, mock_settings):
         "messages": [{"role": "user", "content": "quota check"}],
     }
 
-    with patch("api.routes.is_quota_check_request", return_value=True):
+    with patch(
+        "api.optimization_handlers.is_quota_check_request", return_value=True
+    ):
         response = client.post("/v1/messages", json=payload)
 
     assert response.status_code == 200
     assert "Quota check passed" in response.json()["content"][0]["text"]
 
     app.dependency_overrides.clear()
-    app.dependency_overrides[require_auth] = override_require_auth
 
 
 def test_create_message_title_generation_skip(client, mock_settings):
     app.dependency_overrides[get_settings] = lambda: mock_settings
-    app.dependency_overrides[require_auth] = override_require_auth
 
     payload = {
         "model": "claude-3-sonnet",
@@ -88,14 +75,15 @@ def test_create_message_title_generation_skip(client, mock_settings):
         "messages": [{"role": "user", "content": "generate title"}],
     }
 
-    with patch("api.routes.is_title_generation_request", return_value=True):
+    with patch(
+        "api.optimization_handlers.is_title_generation_request", return_value=True
+    ):
         response = client.post("/v1/messages", json=payload)
 
     assert response.status_code == 200
     assert "Conversation" in response.json()["content"][0]["text"]
 
     app.dependency_overrides.clear()
-    app.dependency_overrides[require_auth] = override_require_auth
 
 
 def test_count_tokens_endpoint(client):
@@ -113,9 +101,6 @@ def test_count_tokens_endpoint(client):
 
 def test_stop_cli_with_handler(client):
     mock_handler = MagicMock()
-    # Mock the async method to return a completed future or just mock it since TestClient
-    # will run the app in a way that respects it?
-    # Actually, we need to mock it as an async function.
     mock_handler.stop_all_tasks = AsyncMock(return_value=3)
     app.state.message_handler = mock_handler
 
@@ -125,7 +110,6 @@ def test_stop_cli_with_handler(client):
     assert response.json()["cancelled_count"] == 3
     mock_handler.stop_all_tasks.assert_called_once()
 
-    # Cleanup state
     if hasattr(app.state, "message_handler"):
         del app.state.message_handler
 

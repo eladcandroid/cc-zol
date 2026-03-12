@@ -2,14 +2,10 @@
 
 from functools import lru_cache
 from typing import Optional
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from dotenv import load_dotenv
 
-load_dotenv()
-
-# Default base URL for provider (any OpenAI-compatible endpoint)
-PROVIDER_BASE_URL = "https://api.openai.com/v1"
+from .nim import NimSettings
 
 
 class Settings(BaseSettings):
@@ -17,11 +13,22 @@ class Settings(BaseSettings):
 
     # ==================== Provider Config ====================
     provider_api_key: str = ""
-    provider_base_url: str = PROVIDER_BASE_URL
+    provider_base_url: str = "https://api.openai.com/v1"
+
+    # ==================== Multi-Provider Keys ====================
+    nvidia_nim_api_key: str = ""
+    open_router_api_key: str = Field(default="", validation_alias="OPENROUTER_API_KEY")
+    lm_studio_base_url: str = Field(default="http://localhost:1234/v1", validation_alias="LM_STUDIO_BASE_URL")
+    llamacpp_base_url: str = Field(default="http://localhost:8080/v1", validation_alias="LLAMACPP_BASE_URL")
 
     # ==================== Model ====================
     # All Claude model requests are mapped to this single model
     model: str = "moonshotai/kimi-k2.5"
+
+    # ==================== Model Overrides per Claude Tier ====================
+    model_opus: Optional[str] = Field(default=None, validation_alias="MODEL_OPUS")
+    model_sonnet: Optional[str] = Field(default=None, validation_alias="MODEL_SONNET")
+    model_haiku: Optional[str] = Field(default=None, validation_alias="MODEL_HAIKU")
 
     # ==================== Rate Limiting ====================
     provider_rate_limit: int = 40
@@ -32,6 +39,13 @@ class Settings(BaseSettings):
 
     # ==================== Logging ====================
     log_full_payloads: bool = False
+    log_file: str = "server.log"
+
+    # ==================== HTTP / Concurrency ====================
+    provider_max_concurrency: int = 5
+    http_read_timeout: float = 300.0
+    http_write_timeout: float = 10.0
+    http_connect_timeout: float = 2.0
 
     # ==================== Optimizations ====================
     enable_network_probe_mock: bool = True
@@ -80,6 +94,9 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8082
 
+    # ==================== NVIDIA NIM ====================
+    nim: NimSettings = Field(default_factory=NimSettings)
+
     # ==================== MongoDB ====================
     mongodb_uri: str = "mongodb://localhost:27017"
 
@@ -109,6 +126,9 @@ class Settings(BaseSettings):
         "smtp_user",
         "smtp_password",
         "smtp_from_email",
+        "model_opus",
+        "model_sonnet",
+        "model_haiku",
         mode="before",
     )
     @classmethod
@@ -116,6 +136,59 @@ class Settings(BaseSettings):
         if v == "":
             return None
         return v
+
+    # ==================== Derived Helpers ====================
+
+    @property
+    def provider_type(self) -> str:
+        """Extract provider type from the model string, or 'generic' if no known prefix."""
+        known_providers = ("nvidia_nim", "open_router", "lmstudio", "llamacpp")
+        if "/" in self.model:
+            prefix = self.model.split("/", 1)[0]
+            if prefix in known_providers:
+                return prefix
+        return "generic"
+
+    @property
+    def model_name(self) -> str:
+        """Extract the actual model name from the model string."""
+        known_providers = ("nvidia_nim", "open_router", "lmstudio", "llamacpp")
+        if "/" in self.model:
+            prefix = self.model.split("/", 1)[0]
+            if prefix in known_providers:
+                return self.model.split("/", 1)[1]
+        return self.model
+
+    def resolve_model(self, claude_model_name: str) -> str:
+        """Resolve a Claude model name to the configured provider/model string."""
+        name_lower = claude_model_name.lower()
+        if "opus" in name_lower and self.model_opus is not None:
+            return self.model_opus
+        if "haiku" in name_lower and self.model_haiku is not None:
+            return self.model_haiku
+        if "sonnet" in name_lower and self.model_sonnet is not None:
+            return self.model_sonnet
+        return self.model
+
+    @staticmethod
+    def parse_provider_type(model_string: str) -> str:
+        """Extract provider type from any 'provider/model' string, or 'generic'."""
+        known_providers = ("nvidia_nim", "open_router", "lmstudio", "llamacpp")
+        if "/" in model_string:
+            prefix = model_string.split("/", 1)[0]
+            if prefix in known_providers:
+                return prefix
+        return "generic"
+
+    @staticmethod
+    def parse_model_name(model_string: str) -> str:
+        """Extract model name from any 'provider/model' string."""
+        known_providers = ("nvidia_nim", "open_router", "lmstudio", "llamacpp")
+        if "/" in model_string:
+            prefix = model_string.split("/", 1)[0]
+            if prefix in known_providers:
+                return model_string.split("/", 1)[1]
+        return model_string
 
     model_config = SettingsConfigDict(
         env_file=".env",

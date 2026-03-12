@@ -1,7 +1,7 @@
 """Providers package - implement your own provider by extending BaseProvider."""
 
 from .base import BaseProvider, ProviderConfig
-from .openai_provider import OpenAIProvider
+from .generic import GenericOpenAIProvider
 from .exceptions import (
     ProviderError,
     AuthenticationError,
@@ -14,7 +14,7 @@ from .exceptions import (
 __all__ = [
     "BaseProvider",
     "ProviderConfig",
-    "OpenAIProvider",
+    "GenericOpenAIProvider",
     "ProviderError",
     "AuthenticationError",
     "InvalidRequestError",

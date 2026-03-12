@@ -1,10 +1,13 @@
 """Claude Code CLI session management."""
 
 import asyncio
-import os
 import json
 import logging
-from typing import AsyncGenerator, Optional, Dict, List, Any
+import os
+from collections.abc import AsyncGenerator
+from typing import Any
+
+from .process_registry import register_pid, unregister_pid
 
 logger = logging.getLogger(__name__)
 
@@ -16,13 +19,15 @@ class CLISession:
         self,
         workspace_path: str,
         api_url: str,
-        allowed_dirs: Optional[List[str]] = None,
+        allowed_dirs: list[str] | None = None,
+        plans_directory: str | None = None,
     ):
         self.workspace = os.path.normpath(os.path.abspath(workspace_path))
         self.api_url = api_url
         self.allowed_dirs = [os.path.normpath(d) for d in (allowed_dirs or [])]
-        self.process: Optional[asyncio.subprocess.Process] = None
-        self.current_session_id: Optional[str] = None
+        self.plans_directory = plans_directory
+        self.process: asyncio.subprocess.Process | None = None
+        self.current_session_id: str | None = None
         self._is_busy = False
         self._cli_lock = asyncio.Lock()
 
@@ -32,8 +37,8 @@ class CLISession:
         return self._is_busy
 
     async def start_task(
-        self, prompt: str, session_id: Optional[str] = None
-    ) -> AsyncGenerator[dict, None]:
+        self, prompt: str, session_id: str | None = None, fork_session: bool = False
+    ) -> AsyncGenerator[dict]:
         """
         Start a new task or continue an existing session.
 
@@ -66,6 +71,10 @@ class CLISession:
                     "claude",
                     "--resume",
                     session_id,
+                ]
+                if fork_session:
+                    cmd.append("--fork-session")
+                cmd += [
                     "-p",
                     prompt,
                     "--output-format",
@@ -90,6 +99,10 @@ class CLISession:
                 for d in self.allowed_dirs:
                     cmd.extend(["--add-dir", d])
 
+            if self.plans_directory is not None:
+                settings_json = json.dumps({"plansDirectory": self.plans_directory})
+                cmd.extend(["--settings", settings_json])
+
             try:
                 self.process = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -98,6 +111,8 @@ class CLISession:
                     cwd=self.workspace,
                     env=env,
                 )
+                if self.process and self.process.pid:
+                    register_pid(self.process.pid)
 
                 if not self.process or not self.process.stdout:
                     yield {"type": "exit", "code": 1}
@@ -106,11 +121,34 @@ class CLISession:
                 session_id_extracted = False
                 buffer = bytearray()
 
-                while True:
-                    chunk = await self.process.stdout.read(65536)
-                    if not chunk:
-                        if buffer:
-                            line_str = buffer.decode("utf-8", errors="replace").strip()
+                try:
+                    while True:
+                        chunk = await self.process.stdout.read(65536)
+                        if not chunk:
+                            if buffer:
+                                line_str = buffer.decode(
+                                    "utf-8", errors="replace"
+                                ).strip()
+                                if line_str:
+                                    async for event in self._handle_line_gen(
+                                        line_str, session_id_extracted
+                                    ):
+                                        if event.get("type") == "session_info":
+                                            session_id_extracted = True
+                                        yield event
+                            break
+
+                        buffer.extend(chunk)
+
+                        while True:
+                            newline_pos = buffer.find(b"\n")
+                            if newline_pos == -1:
+                                break
+
+                            line = buffer[:newline_pos]
+                            buffer = buffer[newline_pos + 1 :]
+
+                            line_str = line.decode("utf-8", errors="replace").strip()
                             if line_str:
                                 async for event in self._handle_line_gen(
                                     line_str, session_id_extracted
@@ -118,26 +156,13 @@ class CLISession:
                                     if event.get("type") == "session_info":
                                         session_id_extracted = True
                                     yield event
-                        break
-
-                    buffer.extend(chunk)
-
-                    while True:
-                        newline_pos = buffer.find(b"\n")
-                        if newline_pos == -1:
-                            break
-
-                        line = buffer[:newline_pos]
-                        buffer = buffer[newline_pos + 1 :]
-
-                        line_str = line.decode("utf-8", errors="replace").strip()
-                        if line_str:
-                            async for event in self._handle_line_gen(
-                                line_str, session_id_extracted
-                            ):
-                                if event.get("type") == "session_info":
-                                    session_id_extracted = True
-                                yield event
+                except asyncio.CancelledError:
+                    # Cancelling the handler task should not leave a Claude CLI
+                    # subprocess running in the background.
+                    try:
+                        await asyncio.shield(self.stop())
+                    finally:
+                        raise
 
                 stderr_text = None
                 if self.process.stderr:
@@ -167,10 +192,12 @@ class CLISession:
                 }
             finally:
                 self._is_busy = False
+                if self.process and self.process.pid:
+                    unregister_pid(self.process.pid)
 
     async def _handle_line_gen(
         self, line_str: str, session_id_extracted: bool
-    ) -> AsyncGenerator[dict, None]:
+    ) -> AsyncGenerator[dict]:
         """Process a single line and yield events."""
         try:
             event = json.loads(line_str)
@@ -183,10 +210,10 @@ class CLISession:
 
             yield event
         except json.JSONDecodeError:
-            logger.debug(f"Non-JSON output: {line_str[:100]}")
+            logger.debug(f"Non-JSON output: {line_str}")
             yield {"type": "raw", "content": line_str}
 
-    def _extract_session_id(self, event: Any) -> Optional[str]:
+    def _extract_session_id(self, event: Any) -> str | None:
         """Extract session ID from CLI event."""
         if not isinstance(event, dict):
             return None
@@ -219,9 +246,11 @@ class CLISession:
                 self.process.terminate()
                 try:
                     await asyncio.wait_for(self.process.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
+                except (TimeoutError, asyncio.TimeoutError):
                     self.process.kill()
                     await self.process.wait()
+                if self.process and self.process.pid:
+                    unregister_pid(self.process.pid)
                 return True
             except Exception as e:
                 logger.error(f"Error stopping process: {e}")

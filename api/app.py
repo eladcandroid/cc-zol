@@ -4,6 +4,7 @@ This is the LOCAL PROXY that users run. It only proxies requests to the provider
 Authentication is handled by the remote auth server during login.
 """
 
+import asyncio
 import os
 import logging
 import uuid
@@ -51,6 +52,19 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
 
+_SHUTDOWN_TIMEOUT_S = 5.0
+
+
+async def _best_effort(name: str, awaitable, timeout_s: float = _SHUTDOWN_TIMEOUT_S) -> None:
+    """Run a shutdown step with timeout; never raise to callers."""
+    try:
+        await asyncio.wait_for(awaitable, timeout=timeout_s)
+    except TimeoutError:
+        logger.warning(f"Shutdown step timed out: {name} ({timeout_s}s)")
+    except Exception as e:
+        logger.warning(f"Shutdown step failed: {name}: {type(e).__name__}: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
@@ -88,7 +102,6 @@ async def lifespan(app: FastAPI):
                 workspace_path=workspace,
                 api_url="http://localhost:8082/v1",
                 allowed_dirs=allowed_dirs,
-                max_sessions=settings.max_cli_sessions,
             )
 
             session_store = SessionStore(
@@ -145,12 +158,13 @@ async def lifespan(app: FastAPI):
     yield
 
     # Cleanup
+    logger.info("Shutdown requested, cleaning up...")
     if messaging_platform:
-        await messaging_platform.stop()
+        await _best_effort("messaging_platform.stop", messaging_platform.stop())
     if cli_manager:
-        await cli_manager.stop_all()
-    await cleanup_provider()
-    logger.info("Server shutting down...")
+        await _best_effort("cli_manager.stop_all", cli_manager.stop_all())
+    await _best_effort("cleanup_provider", cleanup_provider())
+    logger.info("Server shut down cleanly")
 
 
 def create_app() -> FastAPI:

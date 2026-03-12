@@ -47,8 +47,9 @@ class TestSettings:
         assert isinstance(settings.model, str)
         assert len(settings.model) > 0
 
-    def test_base_url_constant(self):
-        """Test PROVIDER_BASE_URL is a constant."""
-        from config.settings import PROVIDER_BASE_URL
+    def test_base_url_default(self):
+        """Test provider_base_url default value."""
+        from config.settings import Settings
 
-        assert PROVIDER_BASE_URL == "https://api.openai.com/v1"
+        settings = Settings(_env_file=None)
+        assert settings.provider_base_url == "https://api.openai.com/v1"

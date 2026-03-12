@@ -1,10 +1,8 @@
 import pytest
 import json
 from unittest.mock import MagicMock, AsyncMock, patch
-from providers.openai_provider import (
-    OpenAIProvider,
-    APIError,
-)
+from providers.generic import GenericOpenAIProvider
+from providers.exceptions import APIError
 
 
 # Mock data classes
@@ -41,17 +39,31 @@ class MockRequest:
 @pytest.fixture(autouse=True)
 def mock_rate_limiter():
     """Mock the global rate limiter to prevent waiting."""
-    with patch("providers.openai_provider.GlobalRateLimiter") as mock:
+    from contextlib import asynccontextmanager
+
+    with patch("providers.openai_compat.GlobalRateLimiter") as mock:
         instance = mock.get_instance.return_value
         instance.wait_if_blocked = AsyncMock(return_value=False)
+
+        @asynccontextmanager
+        async def _slot():
+            yield
+
+        instance.concurrency_slot = _slot
+
+        async def _execute_with_retry(fn, *args, **kwargs):
+            return await fn(*args, **kwargs)
+
+        instance.execute_with_retry = _execute_with_retry
+
         yield instance
 
 
 @pytest.mark.asyncio
 async def test_init(provider_config):
     """Test provider initialization."""
-    with patch("providers.openai_provider.AsyncOpenAI") as mock_openai:
-        provider = OpenAIProvider(provider_config)
+    with patch("providers.openai_compat.AsyncOpenAI") as mock_openai:
+        provider = GenericOpenAIProvider(provider_config)
         assert provider._api_key == "test_key"
         assert provider._base_url == "https://test.api.example.com/v1"
         mock_openai.assert_called_once()
@@ -61,7 +73,7 @@ async def test_init(provider_config):
 async def test_build_request_body(openai_provider):
     """Test request body construction."""
     req = MockRequest()
-    body = openai_provider._build_request_body(req, stream=True)
+    body = openai_provider._build_request_body(req)
 
     assert body["model"] == "test-model"
     assert body["temperature"] == 0.5
@@ -159,49 +171,6 @@ async def test_stream_response_thinking_reasoning_content(openai_provider):
                     found_thinking = True
         assert found_thinking
 
-
-@pytest.mark.asyncio
-async def test_complete_success(openai_provider):
-    """Test successful completion."""
-    req = MockRequest()
-
-    mock_response = MagicMock()
-    mock_response.model_dump.return_value = {
-        "id": "test_id",
-        "choices": [
-            {
-                "message": {"role": "assistant", "content": "Hello world"},
-                "finish_reason": "stop",
-            }
-        ],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-    }
-
-    with patch.object(
-        openai_provider._client.chat.completions, "create", new_callable=AsyncMock
-    ) as mock_create:
-        mock_create.return_value = mock_response
-
-        result = await openai_provider.complete(req)
-        assert result["id"] == "test_id"
-        assert result["choices"][0]["message"]["content"] == "Hello world"
-
-
-@pytest.mark.asyncio
-async def test_complete_error_handling(openai_provider):
-    """Test error handling on completion."""
-    req = MockRequest()
-
-    import openai
-
-    with patch.object(
-        openai_provider._client.chat.completions,
-        "create",
-        side_effect=openai.APIError("API Error", request=MagicMock(), body=None),
-    ):
-        with pytest.raises(APIError) as exc:
-            await openai_provider.complete(req)
-        assert "API Error" in str(exc.value)
 
 
 @pytest.mark.asyncio

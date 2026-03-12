@@ -7,13 +7,12 @@ simultaneously in separate CLI processes.
 """
 
 import asyncio
-import uuid
 import logging
-from typing import Dict, Optional, Tuple, List
-
-from .session import CLISession
+import uuid
 
 logger = logging.getLogger(__name__)
+
+from .session import CLISession
 
 
 class CLISessionManager:
@@ -28,8 +27,8 @@ class CLISessionManager:
         self,
         workspace_path: str,
         api_url: str,
-        allowed_dirs: Optional[List[str]] = None,
-        max_sessions: int = 10,
+        allowed_dirs: list[str] | None = None,
+        plans_directory: str | None = None,
     ):
         """
         Initialize the session manager.
@@ -38,23 +37,24 @@ class CLISessionManager:
             workspace_path: Working directory for CLI processes
             api_url: API URL for the proxy
             allowed_dirs: Directories the CLI is allowed to access
-            max_sessions: Maximum concurrent sessions
+            plans_directory: Directory for Claude Code CLI plan files (passed via --settings)
         """
         self.workspace = workspace_path
         self.api_url = api_url
         self.allowed_dirs = allowed_dirs or []
-        self.max_sessions = max_sessions
+        self.plans_directory = plans_directory
 
-        self._sessions: Dict[str, CLISession] = {}
-        self._pending_sessions: Dict[str, CLISession] = {}
-        self._temp_to_real: Dict[str, str] = {}
+        self._sessions: dict[str, CLISession] = {}
+        self._pending_sessions: dict[str, CLISession] = {}
+        self._temp_to_real: dict[str, str] = {}
+        self._real_to_temp: dict[str, str] = {}
         self._lock = asyncio.Lock()
 
-        logger.info(f"CLISessionManager initialized (max_sessions={max_sessions})")
+        logger.info("CLISessionManager initialized")
 
     async def get_or_create_session(
-        self, session_id: Optional[str] = None
-    ) -> Tuple[CLISession, str, bool]:
+        self, session_id: str | None = None
+    ) -> tuple[CLISession, str, bool]:
         """
         Get an existing session or create a new one.
 
@@ -70,21 +70,13 @@ class CLISessionManager:
                 if lookup_id in self._pending_sessions:
                     return self._pending_sessions[lookup_id], lookup_id, False
 
-            total_sessions = len(self._sessions) + len(self._pending_sessions)
-            if total_sessions >= self.max_sessions:
-                await self._cleanup_idle_sessions_unlocked()
-                total_sessions = len(self._sessions) + len(self._pending_sessions)
-                if total_sessions >= self.max_sessions:
-                    raise RuntimeError(
-                        f"Maximum concurrent sessions ({self.max_sessions}) reached."
-                    )
-
             temp_id = session_id if session_id else f"pending_{uuid.uuid4().hex[:8]}"
 
             new_session = CLISession(
                 workspace_path=self.workspace,
                 api_url=self.api_url,
                 allowed_dirs=self.allowed_dirs,
+                plans_directory=self.plans_directory,
             )
             self._pending_sessions[temp_id] = new_session
             logger.info(f"Created new session: {temp_id}")
@@ -103,14 +95,10 @@ class CLISessionManager:
             session = self._pending_sessions.pop(temp_id)
             self._sessions[real_session_id] = session
             self._temp_to_real[temp_id] = real_session_id
+            self._real_to_temp[real_session_id] = temp_id
 
             logger.info(f"Registered session: {temp_id} -> {real_session_id}")
             return True
-
-    async def get_real_session_id(self, temp_id: str) -> Optional[str]:
-        """Get the real session ID for a temporary ID."""
-        async with self._lock:
-            return self._temp_to_real.get(temp_id)
 
     async def remove_session(self, session_id: str) -> bool:
         """Remove a session from the manager."""
@@ -123,21 +111,12 @@ class CLISessionManager:
             if session_id in self._sessions:
                 session = self._sessions.pop(session_id)
                 await session.stop()
-                for temp, real in list(self._temp_to_real.items()):
-                    if real == session_id:
-                        del self._temp_to_real[temp]
+                temp_id = self._real_to_temp.pop(session_id, None)
+                if temp_id is not None:
+                    self._temp_to_real.pop(temp_id, None)
                 return True
 
             return False
-
-    async def _cleanup_idle_sessions_unlocked(self):
-        """Clean up idle sessions (must hold lock)."""
-        idle = [sid for sid, s in self._sessions.items() if not s.is_busy]
-
-        for sid in idle[:3]:
-            session = self._sessions.pop(sid)
-            await session.stop()
-            logger.debug(f"Cleaned up idle session: {sid}")
 
     async def stop_all(self):
         """Stop all sessions."""
@@ -154,13 +133,13 @@ class CLISessionManager:
             self._sessions.clear()
             self._pending_sessions.clear()
             self._temp_to_real.clear()
+            self._real_to_temp.clear()
             logger.info("All sessions stopped")
 
-    def get_stats(self) -> Dict:
+    def get_stats(self) -> dict:
         """Get session statistics."""
         return {
             "active_sessions": len(self._sessions),
             "pending_sessions": len(self._pending_sessions),
-            "max_sessions": self.max_sessions,
             "busy_count": sum(1 for s in self._sessions.values() if s.is_busy),
         }

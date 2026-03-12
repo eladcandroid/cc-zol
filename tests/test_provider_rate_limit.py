@@ -28,16 +28,11 @@ class TestProviderRateLimiter:
     @pytest.mark.asyncio
     async def test_proactive_throttling(self):
         """
-        Test proactive throttling using aiolimiter.
-        Logic ported from verify_provider_limiter.py
+        Test proactive throttling using strict rolling window.
         """
-        # Set limit: 1 request per 0.25 second
-        os.environ["PROVIDER_RATE_LIMIT"] = "1"
-        os.environ["PROVIDER_RATE_WINDOW"] = "0.25"
-
-        # Re-init with new limits
+        # Re-init with tight limits: 1 request per 0.25 second
         GlobalRateLimiter.reset_instance()
-        limiter = GlobalRateLimiter.get_instance()
+        limiter = GlobalRateLimiter.get_instance(rate_limit=1, rate_window=0.25)
 
         start_time = time.time()
 

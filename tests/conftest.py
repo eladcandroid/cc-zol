@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from unittest.mock import AsyncMock, MagicMock
 from providers.base import ProviderConfig
-from providers.openai_provider import OpenAIProvider
+from providers.generic import GenericOpenAIProvider
 from messaging.base import CLISession, SessionManagerInterface, MessagingPlatform
 from messaging.models import IncomingMessage
 from messaging.session import SessionStore
@@ -31,7 +31,7 @@ def provider_config():
 
 @pytest.fixture
 def openai_provider(provider_config):
-    return OpenAIProvider(provider_config)
+    return GenericOpenAIProvider(provider_config)
 
 
 @pytest.fixture

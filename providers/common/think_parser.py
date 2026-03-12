@@ -1,8 +1,7 @@
 """Think tag parser for extracting reasoning content from responses."""
 
-import re
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Optional, Tuple, Iterator, Any
 from enum import Enum
 
 
@@ -47,24 +46,25 @@ class ThinkTagParser:
         Feed content and yield parsed chunks.
 
         Handles partial tags by buffering content near potential tag boundaries.
+        Uses an iterative loop instead of mutual recursion to avoid stack overflow
+        on inputs with many consecutive think tags.
         """
         self._buffer += content
 
         while self._buffer:
+            prev_len = len(self._buffer)
             if not self._in_think_tag:
                 chunk = self._parse_outside_think()
-                if chunk:
-                    yield chunk
-                else:
-                    break
             else:
                 chunk = self._parse_inside_think()
-                if chunk:
-                    yield chunk
-                else:
-                    break
 
-    def _parse_outside_think(self) -> Optional[ContentChunk]:
+            if chunk:
+                yield chunk
+            elif len(self._buffer) == prev_len:
+                # No progress: waiting for more data
+                break
+
+    def _parse_outside_think(self) -> ContentChunk | None:
         """Parse content outside think tags."""
         think_start = self._buffer.find(self.OPEN_TAG)
         orphan_close = self._buffer.find(self.CLOSE_TAG)
@@ -76,8 +76,8 @@ class ThinkTagParser:
             self._buffer = self._buffer[orphan_close + self.CLOSE_TAG_LEN :]
             if pre_orphan:
                 return ContentChunk(ContentType.TEXT, pre_orphan)
-            # Continue parsing after stripping orphan tag
-            return self._parse_outside_think()
+            # Buffer shrunk; the feed() loop will continue parsing
+            return None
 
         if think_start == -1:
             # No tag found - check for partial tag at end
@@ -113,10 +113,11 @@ class ThinkTagParser:
             self._in_think_tag = True
             if pre_think:
                 return ContentChunk(ContentType.TEXT, pre_think)
-            # Continue parsing inside think tag
-            return self._parse_inside_think()
+            # Buffer shrunk (consumed <think>); the feed() loop will continue
+            # parsing inside the think tag on the next iteration
+            return None
 
-    def _parse_inside_think(self) -> Optional[ContentChunk]:
+    def _parse_inside_think(self) -> ContentChunk | None:
         """Parse content inside think tags."""
         think_end = self._buffer.find(self.CLOSE_TAG)
 
@@ -148,10 +149,11 @@ class ThinkTagParser:
             self._in_think_tag = False
             if thinking_content:
                 return ContentChunk(ContentType.THINKING, thinking_content)
-            # Continue parsing outside think tag
-            return self._parse_outside_think()
+            # Buffer shrunk (consumed </think>); the feed() loop will continue
+            # parsing outside the think tag on the next iteration
+            return None
 
-    def flush(self) -> Optional[ContentChunk]:
+    def flush(self) -> ContentChunk | None:
         """Flush any remaining buffered content."""
         if self._buffer:
             chunk_type = (
@@ -161,47 +163,3 @@ class ThinkTagParser:
             self._buffer = ""
             return ContentChunk(chunk_type, content)
         return None
-
-    def reset(self):
-        """Reset parser state."""
-        self._buffer = ""
-        self._in_think_tag = False
-
-
-def extract_think_content(text: str) -> Tuple[Optional[str], str]:
-    """
-    Extract thinking content from text (non-streaming).
-
-    Returns: (thinking_content, remaining_text)
-    """
-    think_pattern = re.compile(r"<think>(.*?)</think>", re.DOTALL)
-    matches = think_pattern.findall(text)
-
-    if matches:
-        thinking = "\n".join(matches)
-        remaining = think_pattern.sub("", text).strip()
-        return thinking, remaining
-
-    return None, text
-
-
-def extract_reasoning_from_delta(delta: Any) -> Optional[str]:
-    """
-    Extract reasoning content from an OpenAI delta object.
-
-    Checks both 'reasoning_content' and 'reasoning_details' fields.
-    """
-    if isinstance(delta, dict):
-        reasoning = delta.get("reasoning_content")
-        if reasoning:
-            return reasoning
-
-        reasoning_details = delta.get("reasoning_details")
-        if reasoning_details and isinstance(reasoning_details, list):
-            return "".join(
-                item.get("text", "")
-                for item in reasoning_details
-                if isinstance(item, dict)
-            )
-
-    return None

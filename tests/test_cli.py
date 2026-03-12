@@ -340,6 +340,7 @@ class TestCLISession:
 
         mock_process = MagicMock()
         mock_process.returncode = None
+        mock_process.pid = 99999
 
         # First wait times out
         async def wait_side_effect():
@@ -352,7 +353,8 @@ class TestCLISession:
 
         session.process = mock_process
 
-        stopped = await session.stop()
+        with patch("cli.session.unregister_pid"):
+            stopped = await session.stop()
 
         assert stopped is True
         mock_process.terminate.assert_called()
@@ -521,7 +523,6 @@ class TestCLISessionManager:
         manager = CLISessionManager(
             workspace_path="/tmp/test",
             api_url="http://localhost:8082/v1",
-            max_sessions=5,
         )
 
         session, sid, is_new = await manager.get_or_create_session()
@@ -556,10 +557,8 @@ class TestCLISessionManager:
         manager = CLISessionManager(
             workspace_path="/tmp/test",
             api_url="http://localhost:8082/v1",
-            max_sessions=10,
         )
 
         stats = manager.get_stats()
-        assert stats["max_sessions"] == 10
         assert stats["active_sessions"] == 0
         assert stats["pending_sessions"] == 0

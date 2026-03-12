@@ -1,33 +1,19 @@
 """FastAPI route handlers."""
 
 import logging
+import traceback
 import uuid
 
-from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from .models import (
-    MessagesRequest,
-    MessagesResponse,
-    TokenCountRequest,
-    TokenCountResponse,
-    Usage,
-)
-from .dependencies import get_provider, get_settings
-from .request_utils import (
-    is_quota_check_request,
-    is_title_generation_request,
-    is_prefix_detection_request,
-    extract_command_prefix,
-    get_token_count,
-    is_suggestion_mode_request,
-    is_filepath_extraction_request,
-    extract_filepaths_from_command,
-)
+from .models.anthropic import MessagesRequest, TokenCountRequest
+from .models.responses import TokenCountResponse
+from .optimization_handlers import try_optimizations
+from .dependencies import get_provider_for_type, get_settings
+from .request_utils import get_token_count
 from config.settings import Settings
-from providers.openai_provider import OpenAIProvider
-from providers.exceptions import ProviderError
-from providers.logging_utils import log_request_compact
+from providers.exceptions import InvalidRequestError, ProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -43,111 +29,58 @@ router = APIRouter()
 async def create_message(
     request_data: MessagesRequest,
     raw_request: Request,
-    provider: OpenAIProvider = Depends(get_provider),
     settings: Settings = Depends(get_settings),
 ):
-    """Create a message (streaming or non-streaming).
-
-    Note: Auth is handled by remote server during login.
-    Local proxy just forwards requests to provider.
-    """
+    """Create a message (always streaming)."""
 
     try:
-        if settings.fast_prefix_detection:
-            is_prefix_req, command = is_prefix_detection_request(request_data)
-            if is_prefix_req:
-                return MessagesResponse(
-                    id=f"msg_{uuid.uuid4()}",
-                    model=request_data.model,
-                    content=[{"type": "text", "text": extract_command_prefix(command)}],
-                    stop_reason="end_turn",
-                    usage=Usage(input_tokens=100, output_tokens=5),
-                )
+        if not request_data.messages:
+            raise InvalidRequestError("messages cannot be empty")
 
-        # Optimization: Mock network probe/quota requests
-        if settings.enable_network_probe_mock and is_quota_check_request(request_data):
-            logger.info("Optimization: Intercepted and mocked quota probe")
-            return MessagesResponse(
-                id=f"msg_{uuid.uuid4()}",
-                model=request_data.model,
-                role="assistant",
-                content=[{"type": "text", "text": "Quota check passed."}],
-                stop_reason="end_turn",
-                usage=Usage(input_tokens=10, output_tokens=5),
-            )
+        optimized = try_optimizations(request_data, settings)
+        if optimized is not None:
+            return optimized
+        logger.debug("No optimization matched, routing to provider")
 
-        # Optimization: Skip title generation requests
-        if settings.enable_title_generation_skip and is_title_generation_request(
-            request_data
-        ):
-            logger.info("Optimization: Skipped title generation request")
-            return MessagesResponse(
-                id=f"msg_{uuid.uuid4()}",
-                model=request_data.model,
-                role="assistant",
-                content=[{"type": "text", "text": "Conversation"}],
-                stop_reason="end_turn",
-                usage=Usage(input_tokens=100, output_tokens=5),
-            )
-
-        # Optimization: Skip suggestion mode requests
-        if settings.enable_suggestion_mode_skip and is_suggestion_mode_request(
-            request_data
-        ):
-            logger.info("Optimization: Skipped suggestion mode request")
-            return MessagesResponse(
-                id=f"msg_{uuid.uuid4()}",
-                model=request_data.model,
-                role="assistant",
-                content=[{"type": "text", "text": ""}],
-                stop_reason="end_turn",
-                usage=Usage(input_tokens=10, output_tokens=1),
-            )
-
-        # Optimization: Mock filepath extraction requests
-        if settings.enable_filepath_extraction_mock:
-            is_filepath_req, command, output = is_filepath_extraction_request(
-                request_data
-            )
-            if is_filepath_req:
-                logger.info("Optimization: Mocked filepath extraction request")
-                result = extract_filepaths_from_command(command, output)
-                return MessagesResponse(
-                    id=f"msg_{uuid.uuid4()}",
-                    model=request_data.model,
-                    role="assistant",
-                    content=[{"type": "text", "text": result}],
-                    stop_reason="end_turn",
-                    usage=Usage(input_tokens=50, output_tokens=10),
-                )
+        # Resolve provider from the model-aware mapping
+        provider_type = Settings.parse_provider_type(
+            request_data.resolved_provider_model or settings.model
+        )
+        provider = get_provider_for_type(provider_type)
 
         request_id = f"req_{uuid.uuid4().hex[:12]}"
-        log_request_compact(logger, request_id, request_data)
+        logger.info(
+            "API_REQUEST: request_id=%s model=%s messages=%d",
+            request_id,
+            request_data.model,
+            len(request_data.messages),
+        )
+        logger.debug("FULL_PAYLOAD [%s]: %s", request_id, request_data.model_dump())
 
-        if request_data.stream:
-            input_tokens = get_token_count(
-                request_data.messages, request_data.system, request_data.tools
-            )
-            return StreamingResponse(
-                provider.stream_response(request_data, input_tokens=input_tokens),
-                media_type="text/event-stream",
-                headers={
-                    "X-Accel-Buffering": "no",
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                },
-            )
-        else:
-            response_json = await provider.complete(request_data)
-            return provider.convert_response(response_json, request_data)
+        input_tokens = get_token_count(
+            request_data.messages, request_data.system, request_data.tools
+        )
+        return StreamingResponse(
+            provider.stream_response(
+                request_data,
+                input_tokens=input_tokens,
+                request_id=request_id,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "X-Accel-Buffering": "no",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
 
     except ProviderError:
         raise
     except Exception as e:
-        import traceback
-
-        logger.error(f"Error: {str(e)}\n{traceback.format_exc()}")
-        raise HTTPException(status_code=getattr(e, "status_code", 500), detail=str(e))
+        logger.error(f"Error: {e!s}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=getattr(e, "status_code", 500), detail=str(e)
+        ) from e
 
 
 @router.post("/v1/messages/count_tokens")
@@ -207,7 +140,7 @@ async def stop_cli(request: Request):
         if cli_manager:
             await cli_manager.stop_all()
             return {"status": "stopped", "source": "cli_manager"}
-        return HTTPException(status_code=503, detail="Messaging system not initialized")
+        raise HTTPException(status_code=503, detail="Messaging system not initialized")
 
     count = await handler.stop_all_tasks()
     return {"status": "stopped", "cancelled_count": count}

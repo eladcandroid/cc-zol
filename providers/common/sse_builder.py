@@ -2,8 +2,11 @@
 
 import json
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, Iterator
+from typing import Any
+
+logger = logging.getLogger(__name__)
 
 try:
     import tiktoken
@@ -12,7 +15,6 @@ try:
 except Exception:
     ENCODER = None
 
-logger = logging.getLogger(__name__)
 
 # Map OpenAI finish_reason to Anthropic stop_reason
 STOP_REASON_MAP = {
@@ -23,11 +25,24 @@ STOP_REASON_MAP = {
 }
 
 
-def map_stop_reason(openai_reason: Optional[str]) -> str:
+def map_stop_reason(openai_reason: str | None) -> str:
     """Map OpenAI finish_reason to Anthropic stop_reason."""
     return (
         STOP_REASON_MAP.get(openai_reason, "end_turn") if openai_reason else "end_turn"
     )
+
+
+@dataclass
+class ToolCallState:
+    """State for a single streaming tool call."""
+
+    block_index: int  # -1 if not yet allocated
+    tool_id: str
+    name: str
+    contents: list[str] = field(default_factory=list)
+    started: bool = False
+    task_arg_buffer: str = ""
+    task_args_emitted: bool = False
 
 
 @dataclass
@@ -39,16 +54,82 @@ class ContentBlockManager:
     text_index: int = -1
     thinking_started: bool = False
     text_started: bool = False
-    tool_indices: Dict[int, int] = field(default_factory=dict)
-    tool_contents: Dict[int, str] = field(default_factory=dict)
-    tool_names: Dict[int, str] = field(default_factory=dict)
-    tool_started: Dict[int, bool] = field(default_factory=dict)
+    tool_states: dict[int, ToolCallState] = field(default_factory=dict)
 
     def allocate_index(self) -> int:
         """Allocate and return the next block index."""
         idx = self.next_index
         self.next_index += 1
         return idx
+
+    def register_tool_name(self, index: int, name: str) -> None:
+        """Register or merge a streaming tool name fragment.
+
+        Handles providers that stream names as fragments and those that
+        resend the full name on every chunk.
+        """
+        if index not in self.tool_states:
+            self.tool_states[index] = ToolCallState(
+                block_index=-1, tool_id="", name=name
+            )
+            return
+        state = self.tool_states[index]
+        prev = state.name
+        if not prev or name.startswith(prev):
+            state.name = name
+        elif not prev.startswith(name):
+            state.name = prev + name
+
+    def buffer_task_args(self, index: int, args: str) -> dict | None:
+        """Buffer Task tool args and return parsed JSON when complete.
+
+        Returns the parsed (and patched) args dict once the buffer forms
+        valid JSON, or None if still accumulating.
+        """
+        state = self.tool_states.get(index)
+        if state is None or state.task_args_emitted:
+            return None
+
+        state.task_arg_buffer += args
+        try:
+            args_json = json.loads(state.task_arg_buffer)
+        except Exception:
+            return None
+
+        if args_json.get("run_in_background") is not False:
+            args_json["run_in_background"] = False
+
+        state.task_args_emitted = True
+        state.task_arg_buffer = ""
+        return args_json
+
+    def flush_task_arg_buffers(self) -> list[tuple[int, str]]:
+        """Flush any remaining Task arg buffers. Returns (tool_index, json_str) pairs."""
+        results: list[tuple[int, str]] = []
+        for tool_index, state in list(self.tool_states.items()):
+            if not state.task_arg_buffer or state.task_args_emitted:
+                continue
+
+            out = "{}"
+            try:
+                args_json = json.loads(state.task_arg_buffer)
+                if args_json.get("run_in_background") is not False:
+                    args_json["run_in_background"] = False
+                out = json.dumps(args_json)
+            except Exception as e:
+                prefix = state.task_arg_buffer[:120]
+                logger.warning(
+                    "Task args invalid JSON (id=%s len=%s prefix=%r): %s",
+                    state.tool_id or "unknown",
+                    len(state.task_arg_buffer),
+                    prefix,
+                    e,
+                )
+
+            state.task_args_emitted = True
+            state.task_arg_buffer = ""
+            results.append((tool_index, out))
+        return results
 
 
 class SSEBuilder:
@@ -59,16 +140,19 @@ class SSEBuilder:
         self.model = model
         self.input_tokens = input_tokens
         self.blocks = ContentBlockManager()
-        self._accumulated_text = ""
-        self._accumulated_reasoning = ""
+        self._accumulated_text_parts: list[str] = []
+        self._accumulated_reasoning_parts: list[str] = []
 
-    def _format_event(self, event_type: str, data: Dict[str, Any]) -> str:
+    def _format_event(self, event_type: str, data: dict[str, Any]) -> str:
         """Format as SSE string."""
-        return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+        event_str = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+        logger.debug("SSE_EVENT: %s - %s", event_type, event_str.strip())
+        return event_str
 
     # Message lifecycle events
     def message_start(self) -> str:
         """Generate message_start event."""
+        usage = {"input_tokens": self.input_tokens, "output_tokens": 1}
         return self._format_event(
             "message_start",
             {
@@ -81,7 +165,7 @@ class SSEBuilder:
                     "model": self.model,
                     "stop_reason": None,
                     "stop_sequence": None,
-                    "usage": {"input_tokens": self.input_tokens, "output_tokens": 1},
+                    "usage": usage,
                 },
             },
         )
@@ -93,7 +177,10 @@ class SSEBuilder:
             {
                 "type": "message_delta",
                 "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-                "usage": {"output_tokens": output_tokens},
+                "usage": {
+                    "input_tokens": self.input_tokens,
+                    "output_tokens": output_tokens,
+                },
             },
         )
 
@@ -101,14 +188,10 @@ class SSEBuilder:
         """Generate message_stop event."""
         return self._format_event("message_stop", {"type": "message_stop"})
 
-    def done(self) -> str:
-        """Generate [DONE] marker."""
-        return "[DONE]\n\n"
-
     # Content block events
     def content_block_start(self, index: int, block_type: str, **kwargs) -> str:
         """Generate content_block_start event."""
-        content_block: Dict[str, Any] = {"type": block_type}
+        content_block: dict[str, Any] = {"type": block_type}
         if block_type == "thinking":
             content_block["thinking"] = kwargs.get("thinking", "")
         elif block_type == "text":
@@ -129,7 +212,7 @@ class SSEBuilder:
 
     def content_block_delta(self, index: int, delta_type: str, content: str) -> str:
         """Generate content_block_delta event."""
-        delta: Dict[str, Any] = {"type": delta_type}
+        delta: dict[str, Any] = {"type": delta_type}
         if delta_type == "thinking_delta":
             delta["thinking"] = content
         elif delta_type == "text_delta":
@@ -165,7 +248,7 @@ class SSEBuilder:
 
     def emit_thinking_delta(self, content: str) -> str:
         """Emit thinking content delta."""
-        self._accumulated_reasoning += content
+        self._accumulated_reasoning_parts.append(content)
         return self.content_block_delta(
             self.blocks.thinking_index, "thinking_delta", content
         )
@@ -184,7 +267,7 @@ class SSEBuilder:
 
     def emit_text_delta(self, content: str) -> str:
         """Emit text content delta."""
-        self._accumulated_text += content
+        self._accumulated_text_parts.append(content)
         return self.content_block_delta(self.blocks.text_index, "text_delta", content)
 
     def stop_text_block(self) -> str:
@@ -196,19 +279,31 @@ class SSEBuilder:
     def start_tool_block(self, tool_index: int, tool_id: str, name: str) -> str:
         """Start a tool_use block."""
         block_idx = self.blocks.allocate_index()
-        self.blocks.tool_indices[tool_index] = block_idx
-        self.blocks.tool_contents[tool_index] = ""
+        if tool_index in self.blocks.tool_states:
+            state = self.blocks.tool_states[tool_index]
+            state.block_index = block_idx
+            state.tool_id = tool_id
+            state.started = True
+        else:
+            self.blocks.tool_states[tool_index] = ToolCallState(
+                block_index=block_idx,
+                tool_id=tool_id,
+                name=name,
+                started=True,
+            )
         return self.content_block_start(block_idx, "tool_use", id=tool_id, name=name)
 
     def emit_tool_delta(self, tool_index: int, partial_json: str) -> str:
         """Emit tool input delta."""
-        self.blocks.tool_contents[tool_index] += partial_json
-        block_idx = self.blocks.tool_indices[tool_index]
-        return self.content_block_delta(block_idx, "input_json_delta", partial_json)
+        state = self.blocks.tool_states[tool_index]
+        state.contents.append(partial_json)
+        return self.content_block_delta(
+            state.block_index, "input_json_delta", partial_json
+        )
 
     def stop_tool_block(self, tool_index: int) -> str:
         """Stop a tool block."""
-        block_idx = self.blocks.tool_indices[tool_index]
+        block_idx = self.blocks.tool_states[tool_index].block_index
         return self.content_block_stop(block_idx)
 
     # State management helpers
@@ -239,8 +334,9 @@ class SSEBuilder:
             yield self.stop_thinking_block()
         if self.blocks.text_started:
             yield self.stop_text_block()
-        for tool_index in list(self.blocks.tool_indices.keys()):
-            yield self.stop_tool_block(tool_index)
+        for tool_index, state in list(self.blocks.tool_states.items()):
+            if state.started:
+                yield self.stop_tool_block(tool_index)
 
     # Error handling
     def emit_error(self, error_message: str) -> Iterator[str]:
@@ -254,30 +350,42 @@ class SSEBuilder:
     @property
     def accumulated_text(self) -> str:
         """Get accumulated text content."""
-        return self._accumulated_text
+        return "".join(self._accumulated_text_parts)
 
     @property
     def accumulated_reasoning(self) -> str:
         """Get accumulated reasoning content."""
-        return self._accumulated_reasoning
+        return "".join(self._accumulated_reasoning_parts)
 
     def estimate_output_tokens(self) -> int:
         """Estimate output tokens from accumulated content."""
+        accumulated_text = self.accumulated_text
+        accumulated_reasoning = self.accumulated_reasoning
         if ENCODER:
-            text_tokens = len(ENCODER.encode(self._accumulated_text))
-            reasoning_tokens = len(ENCODER.encode(self._accumulated_reasoning))
+            text_tokens = len(ENCODER.encode(accumulated_text))
+            reasoning_tokens = len(ENCODER.encode(accumulated_reasoning))
             # Tool calls are harder to tokenize exactly without reconstruction, but we can approximate
             # by tokenizing the json dumps of tool contents
             tool_tokens = 0
-            for idx, content in self.blocks.tool_contents.items():
-                name = self.blocks.tool_names.get(idx, "")
-                tool_tokens += len(ENCODER.encode(name))
-                tool_tokens += len(ENCODER.encode(content))
-                tool_tokens += 10  # Control tokens overhead
+            started_tool_count = 0
+            for state in self.blocks.tool_states.values():
+                tool_tokens += len(ENCODER.encode(state.name))
+                tool_tokens += len(ENCODER.encode("".join(state.contents)))
+                tool_tokens += 15  # Control tokens overhead per tool
+                if state.started:
+                    started_tool_count += 1
 
-            return text_tokens + reasoning_tokens + tool_tokens
+            # Per-block overhead (~4 tokens per content block)
+            block_count = (
+                (1 if accumulated_reasoning else 0)
+                + (1 if accumulated_text else 0)
+                + started_tool_count
+            )
+            block_overhead = block_count * 4
 
-        text_tokens = len(self._accumulated_text) // 4
-        reasoning_tokens = len(self._accumulated_reasoning) // 4
-        tool_tokens = len(self.blocks.tool_indices) * 50
+            return text_tokens + reasoning_tokens + tool_tokens + block_overhead
+
+        text_tokens = len(accumulated_text) // 4
+        reasoning_tokens = len(accumulated_reasoning) // 4
+        tool_tokens = sum(1 for s in self.blocks.tool_states.values() if s.started) * 50
         return text_tokens + reasoning_tokens + tool_tokens

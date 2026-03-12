@@ -1,5 +1,5 @@
-from providers.utils.think_parser import ThinkTagParser, ContentType
-from providers.utils.heuristic_tool_parser import HeuristicToolParser
+from providers.common.think_parser import ThinkTagParser, ContentType
+from providers.common.heuristic_tool_parser import HeuristicToolParser
 
 
 def test_think_tag_parser_basic():
