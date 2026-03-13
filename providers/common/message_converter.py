@@ -114,22 +114,50 @@ class AnthropicToOpenAIConverter:
 
     @staticmethod
     def _convert_user_message(content: list[Any]) -> list[dict[str, Any]]:
-        """Convert user message blocks (including tool results), preserving order."""
+        """Convert user message blocks (including tool results and images), preserving order."""
         result: list[dict[str, Any]] = []
-        text_parts: list[str] = []
+        # Collect text and image parts together for multimodal messages
+        multimodal_parts: list[dict[str, Any]] = []
 
-        def flush_text() -> None:
-            if text_parts:
-                result.append({"role": "user", "content": "\n".join(text_parts)})
-                text_parts.clear()
+        def flush_parts() -> None:
+            if multimodal_parts:
+                # If only text parts, send as plain string for compatibility
+                if all(p.get("type") == "text" for p in multimodal_parts):
+                    text = "\n".join(p["text"] for p in multimodal_parts)
+                    result.append({"role": "user", "content": text})
+                else:
+                    # Mixed content (text + images) - send as list
+                    result.append({"role": "user", "content": list(multimodal_parts)})
+                multimodal_parts.clear()
 
         for block in content:
             block_type = get_block_type(block)
 
             if block_type == "text":
-                text_parts.append(get_block_attr(block, "text", ""))
+                multimodal_parts.append({
+                    "type": "text",
+                    "text": get_block_attr(block, "text", ""),
+                })
+            elif block_type == "image":
+                source = get_block_attr(block, "source", {})
+                source_type = source.get("type") if isinstance(source, dict) else None
+                if source_type == "base64":
+                    media_type = source.get("media_type", "image/png")
+                    data = source.get("data", "")
+                    multimodal_parts.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{media_type};base64,{data}",
+                        },
+                    })
+                elif source_type == "url":
+                    url = source.get("url", "")
+                    multimodal_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": url},
+                    })
             elif block_type == "tool_result":
-                flush_text()
+                flush_parts()
                 tool_content = get_block_attr(block, "content", "")
                 if isinstance(tool_content, list):
                     tool_content = "\n".join(
@@ -146,7 +174,7 @@ class AnthropicToOpenAIConverter:
                     }
                 )
 
-        flush_text()
+        flush_parts()
         return result
 
     @staticmethod
